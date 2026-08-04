@@ -58,8 +58,8 @@ Every node has exactly one job, done well. ESP nodes never communicate node-to-n
 | Compute | Raspberry Pi (model flexible; needs WiFi, UART, sufficient CPU/RAM) | Lane-pair | Bridges ESPNow mesh traffic to other protocols (Redis, MQTT, ESP32 bridge middleware) |
 | Relay | Waveshare ESP32-S3-ETH-8DI-8RO + 8-channel optocoupler board | Lane-pair | Switches pinsetter control signals on gateway command |
 | Pin-count sensor | ESP32-CAM | Lane | Reports standing pin count |
-| Fouling sensor | Baomain E3F-R2NK retroreflective break-beam | Lane | Detects foul line violations |
-| Ball-speed sensor | Dual Baomain E3F-R2NK retroreflective break-beam | Lane | Calculates ball speed |
+| Fouling sensor | Baomain E3F-R2NK retroreflective break-beam | Lane-pair | Detects foul line violations |
+| Ball-speed sensor | 4x Baomain E3F-R2NK retroreflective break-beam (2 per lane) | Lane-pair | Calculates ball speed |
 | Ball-detect sensor (optional, failsafe) | Baomain E3F-R2NK retroreflective break-beam | Lane | Positioned just before the pin deck; notifies gateway a ball has arrived |
 
 No pinsetter observability/telemetry stack in this draft — sensing is scoped to scoring-path inputs only.
