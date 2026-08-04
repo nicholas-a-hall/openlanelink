@@ -1,0 +1,12 @@
+<svg width="680" height="320" viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Helvetica Neue, Arial, sans-serif">
+<defs><marker id="arrow3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#666" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<g><rect x="220" y="20" width="240" height="56" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/><text x="340" y="40" text-anchor="middle" font-size="14" font-weight="600" fill="#4A1B0C">Node beacons unprovisioned</text><text x="340" y="58" text-anchor="middle" font-size="12" fill="#993C1D">NVS read failed</text></g>
+<line x1="340" y1="76" x2="340" y2="106" stroke="#666" stroke-width="1" marker-end="url(#arrow3)"/>
+<g><rect x="220" y="106" width="240" height="56" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="1"/><text x="340" y="126" text-anchor="middle" font-size="14" font-weight="600" fill="#4A1B0C">Gateway checks registry</text><text x="340" y="144" text-anchor="middle" font-size="12" fill="#993C1D">Looks up MAC upstream</text></g>
+<path d="M300 162L150 200L150 220" fill="none" stroke="#666" stroke-width="1" marker-end="url(#arrow3)"/>
+<path d="M380 162L530 200L530 220" fill="none" stroke="#666" stroke-width="1" marker-end="url(#arrow3)"/>
+<text x="190" y="190" text-anchor="middle" font-size="12" fill="#666">Known MAC</text>
+<text x="490" y="190" text-anchor="middle" font-size="12" fill="#666">Unknown MAC</text>
+<g><rect x="30" y="220" width="240" height="56" rx="8" fill="#E1F5EE" stroke="#0F6E56" stroke-width="1"/><text x="150" y="240" text-anchor="middle" font-size="14" font-weight="600" fill="#085041">Identity pushed back</text><text x="150" y="258" text-anchor="middle" font-size="12" fill="#0F6E56">Silent, no operator step</text></g>
+<g><rect x="410" y="220" width="240" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="1"/><text x="530" y="240" text-anchor="middle" font-size="14" font-weight="600" fill="#0C447C">Falls into initial flow</text><text x="530" y="258" text-anchor="middle" font-size="12" fill="#185FA5">Full provisioning restarts</text></g>
+</svg>
