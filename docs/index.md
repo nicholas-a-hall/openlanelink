@@ -27,6 +27,24 @@ By creating an open-source-first alternative, using commodity hardware, OpenLane
 
 In other words, the goal is simple: We want there to be more bowling centers in the world. We built OpenLaneLink to help make that possible.
 
+## Current state
+
+**Today**
+- Pinsetter control
+- ESP-NOW transport
+- RS-485 redundant transport
+- Gateway registration/recovery
+- Lane-local game state
+- REST/WebSocket API
+- Bowler and overhead UIs
+
+**In progress**
+- Camera pin detection
+- Node health monitoring
+- Dynamic gateway discovery
+- Complete foul/speed integration
+- Production field testing
+
 ## Requirements
 
 - **Lane-pair survivability**: a lane must keep bowling with zero server dependency during an active session. If the site aggregator, Redis, or the network dies mid-frame, the lane still detects pins, scores, and cycles the pinsetter. Loss of upstream = loss of visibility, not loss of function.
@@ -46,7 +64,7 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 
 ## Hardware requirements
 
-Every node has exactly one job, done well. ESP nodes never communicate node-to-node — all traffic routes through the gateway. The compute node's only job is bridging the ESPNow mesh to other protocols; it doesn't originate commands. The gateway is the only node with command-and-control authority over every other node type.
+Every node has exactly one job, done well. ESP nodes never communicate node-to-node — all traffic routes through the gateway. The compute node bridges the ESPNow mesh to other protocols and, through its REST API, requests operations like a pinsetter cycle — but it doesn't hold hardware command-and-control authority. The gateway is the only node with that authority over every other node type; the compute node's requests still flow through it.
 
 | Node | Hardware | Per | Job |
 |---|---|---|---|
