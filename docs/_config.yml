@@ -1,7 +1,7 @@
 title: Open Lane Link
 description: Open-source, hardware-agnostic data platform for bowling centers
-remote_theme: pages-themes/slate@v0.2.0
+remote_theme: pages-themes/slate
 plugins:
-- jekyll-remote-theme
+  - jekyll-remote-theme
 url: "https://nicholas-a-hall.github.io"
 baseurl: "/openlanelink"
