@@ -1,4 +1,6 @@
 title: Open Lane Link
 description: Open-source, hardware-agnostic data platform for bowling centers
-baremetal: true
+theme: minima
 show_excerpts: true
+url: "https://nicholas-a-hall.github.io"
+baseurl: "/openlanelink"
