@@ -44,10 +44,6 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 - **Integration bus**: separate MQTT bus, kept deliberately decoupled from the core Redis Streams bus, so external integrations (Home Assistant, etc.) can't back-pressure or couple to internal lane logic. MQTT is an optional egress adapter only — not a control path.
 - **Server authority model**: async-only. The server does not hold synchronous authority over lane hardware. Commands go out, lanes act on local authority, state reconciles.
 
-### Peer registration
-
-ESPNow peer registration uses a broadcast handshake pattern, governed by software within the lane-compute + gateway node.
-
 ## Hardware requirements
 
 Every node has exactly one job, done well. ESP nodes never communicate node-to-node — all traffic routes through the gateway. The compute node's only job is bridging the ESPNow mesh to other protocols; it doesn't originate commands. The gateway is the only node with command-and-control authority over every other node type.
@@ -243,3 +239,6 @@ Loose threads in the current design, gathered here instead of scattered through 
 ---
 
 This project and spec are a work in progress, updated regularly.
+
+Project repo: [github.com/nicholas-a-hall/openlanelink](https://github.com/nicholas-a-hall/openlanelink)
+[LinkedIn](https://www.linkedin.com/in/nicholashall87/) · [nicholas-a-hall.github.io](https://nicholas-a-hall.github.io)
