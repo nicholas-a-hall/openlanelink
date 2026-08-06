@@ -30,7 +30,7 @@
 // board's UART2 (pins below, unverified placeholder). This gateway
 // TRANSLATES between ESP-NOW and the Pi's UART framing -- it is not a raw
 // byte pass-through, so the Pi-facing UART payload shapes are unchanged from
-// before the ESP-NOW protocol unification (scoring/protocol.py needs no
+// before the ESP-NOW protocol unification (state_machine/protocol.py needs no
 // changes). See firmware/HANDOFF.md's "Gateway <-> Pi UART bridge" section
 // and PROTOCOL.md's "Gateway <-> Pi UART boundary" note.
 //
@@ -130,24 +130,24 @@ struct NodeMessage {
 // ============================================================
 // Pi UART payload shapes -- UNCHANGED from before the ESP-NOW protocol
 // unification. These are NOT sent over ESP-NOW, only over the UART link to
-// the Pi, so scoring/protocol.py needs no changes. This gateway translates
+// the Pi, so state_machine/protocol.py needs no changes. This gateway translates
 // the unified NodeMessage into these on the way to the Pi.
 // ============================================================
 
-struct UartLaneEventPayload {   // matches scoring/protocol.py's LANE_EVENT_FMT
+struct UartLaneEventPayload {   // matches state_machine/protocol.py's LANE_EVENT_FMT
   uint8_t eventType;            // 0 = CLEAR, 1 = FOUL
   uint8_t laneNumber;
   uint32_t timestampMs;
 };
 
-struct UartBeamEventPayload {   // matches scoring/protocol.py's BEAM_EVENT_FMT
+struct UartBeamEventPayload {   // matches state_machine/protocol.py's BEAM_EVENT_FMT
   uint8_t eventType;            // 3 = BEAM_CLEAR, 4 = BEAM_BROKEN
   uint8_t laneNumber;
   uint8_t beamRole;
   uint32_t timestampMs;
 };
 
-struct UartPinsetterStatusPayload {   // matches scoring/protocol.py's STATUS_EVENT_FMT
+struct UartPinsetterStatusPayload {   // matches state_machine/protocol.py's STATUS_EVENT_FMT
   uint8_t statusCode;                 // StatusCode, see enum above
   uint8_t laneNumber;                 // 0 for node-level status codes, see PROTOCOL.md
   uint32_t timestampMs;
@@ -572,7 +572,7 @@ void sendToPi(UartMsgType msgType, const uint8_t *data, uint8_t dataLen) {
 
 void forwardLaneEventToPi(const NodeMessage &msg) {
   UartLaneEventPayload p;
-  p.eventType = (msg.code == LANE_FOUL) ? 1 : 0;   // scoring/protocol.py EVENT_FOUL/EVENT_CLEAR
+  p.eventType = (msg.code == LANE_FOUL) ? 1 : 0;   // state_machine/protocol.py EVENT_FOUL/EVENT_CLEAR
   p.laneNumber = msg.laneNumber;
   p.timestampMs = msg.timestampMs;
   sendToPi(UART_LANE_EVENT, (const uint8_t *)&p, sizeof(p));
@@ -580,7 +580,7 @@ void forwardLaneEventToPi(const NodeMessage &msg) {
 
 void forwardBeamEventToPi(const NodeMessage &msg) {
   UartBeamEventPayload p;
-  p.eventType = (msg.code == BEAM_BROKEN) ? 4 : 3;  // scoring/protocol.py EVENT_BEAM_BROKEN/EVENT_BEAM_CLEAR
+  p.eventType = (msg.code == BEAM_BROKEN) ? 4 : 3;  // state_machine/protocol.py EVENT_BEAM_BROKEN/EVENT_BEAM_CLEAR
   p.laneNumber = msg.laneNumber;
   p.beamRole = msg.data[0];
   p.timestampMs = msg.timestampMs;

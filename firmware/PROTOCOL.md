@@ -200,7 +200,7 @@ harmlessly, so there's no reason to withhold it from RS485.
 |---|---|
 | `code` | ball number (1 or 2) |
 | `laneNumber` | the lane |
-| `data[0..1]` | `pinfallMask`, `uint16_t` LE, bit per pin 1–10, **bit=1 means that pin fell on this ball** (bit0=pin1 ... bit9=pin10) — the count/delta of *newly* fallen pins, not a raw standing-pin snapshot. Was ambiguous until `scoring/game_state.py` needed a firm answer to score against; that module works in per-ball pinfall *counts* derived from this, not the mask directly — see its docstring. The camera pipeline (`pinfall.py`, not yet implemented) is responsible for turning a raw standing-pins observation into this delta before it ever reaches `MSG_SCORE_EVENT`. |
+| `data[0..1]` | `pinfallMask`, `uint16_t` LE, bit per pin 1–10, **bit=1 means that pin fell on this ball** (bit0=pin1 ... bit9=pin10) — the count/delta of *newly* fallen pins, not a raw standing-pin snapshot. Was ambiguous until `state_machine/game_state.py` needed a firm answer to score against; that module works in per-ball pinfall *counts* derived from this, not the mask directly — see its docstring. The camera pipeline (`pinfall.py`, not yet implemented) is responsible for turning a raw standing-pins observation into this delta before it ever reaches `MSG_SCORE_EVENT`. |
 
 ### `MSG_ACK` — gateway → pinsetter, **dual-sent (ESP-NOW + RS485)**
 | field | value |
@@ -319,4 +319,4 @@ on. It has since gained one new payload, `UART_PINSETTER_STATUS` (added
 verbatim (`statusCode`, `laneNumber`, `timestampMs`) — added so the Pi's game
 state machine has a real `STATUS_CYCLE_COMPLETE` signal instead of guessing
 off a fixed timeout after sending `CMD_CYCLE`/`CMD_RERACK`. See
-`scoring/protocol.py`'s `StatusEvent` for the Pi-side decode.
+`state_machine/protocol.py`'s `StatusEvent` for the Pi-side decode.
