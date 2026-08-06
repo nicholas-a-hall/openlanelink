@@ -81,6 +81,19 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
   const card = elevation("card");
   const inset = elevation("inset");
   const total = currentTotal(bowler.frames);
+  // Width-driven font-size ceiling, computed per actual content length
+  // rather than a fixed worst-case constant -- "BOB" gets to render much
+  // larger than "TWELVECHARNAM" would, instead of both being capped
+  // identically for whichever is longer. `100cqw / (chars * emPerChar)`,
+  // expressed as `(100/emPerChar)/chars` so it's a single cqw coefficient;
+  // emPerChar values below are measured against the actual rendered fonts
+  // (see DisplayLane's zoom/overflow verification), not estimated from a
+  // font-metrics table. min() with the existing cqh-driven term still
+  // applies afterward, so a 1-2 character name/score doesn't blow up to
+  // some absurd size -- that term's own max (90px / 100px) is the backstop
+  // for very short content, same role it already played before this.
+  const nameWidthCqw = 100 / (0.5 * Math.max(bowler.name.length, 1));
+  const scoreWidthCqw = 100 / (0.62 * Math.max(String(total).length, 1));
   let activeFrame = -1;
   for (let i = 0; i < bowler.frames.length; i++) if (bowler.frames[i].balls.length > 0) activeFrame = i;
   // Which exact ball is about to be thrown — only meaningful for the
@@ -109,9 +122,24 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
       // to animate from, so without this it would just pop in instantly.
       animation: "ll-sheet-enter 420ms ease",
     }}>
-      <div style={{ width: "clamp(70px,11vw,170px)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+      {/* containerType:"inline-size" scopes `cqw` below to THIS column's own
+          width, not the outer sheet's. Necessary because the name's
+          font-size was driven purely by `cqh` (the sheet's height) with no
+          relationship at all to this column's width -- a short roster on a
+          narrow screen could size the font for "big dramatic text" while
+          the column itself stayed narrow, truncating a name as short as
+          "ALICE" to "ALI…". `cqh` still resolves fine here for the min()'s
+          other term -- container-type:inline-size only claims the inline
+          (width) axis; a block-axis (height) query skips past it to the
+          sheet's own containerType:"size" context, same as before. */}
+      <div style={{
+        width: "clamp(70px,11vw,170px)", flexShrink: 0, display: "flex", alignItems: "center",
+        justifyContent: "center", textAlign: "center", containerType: "inline-size",
+      }}>
         <div style={{
-          fontFamily: T.fontDisplay, fontSize: "clamp(16px,40cqh,90px)", fontWeight: 700,
+          fontFamily: T.fontDisplay,
+          fontSize: `min(clamp(16px,40cqh,90px), ${nameWidthCqw}cqw)`,
+          fontWeight: 700,
           color: isUp ? T.yellow : T.text, letterSpacing: "0.03em",
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
           textShadow: isUp ? "0 0 10px rgba(224,192,48,0.4)" : "none",
@@ -164,8 +192,29 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
         })}
       </div>
 
-      <div style={{ width: "clamp(60px,9vw,140px)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "flex-start" }}>
-        <div style={{ fontFamily: T.fontMono, fontSize: "clamp(32px,55cqh,130px)", fontWeight: 700, color: isUp ? T.yellow : T.muted, lineHeight: 1.05 }}>
+      {/* containerType:"inline-size" scopes scoreWidthCqw to this column's
+          own width -- same reasoning as the name column above. overflow:
+          hidden on both this div and its child stays as a hard backstop:
+          if font-metric reality ever drifts from the measured emPerChar
+          coefficient (a theme swap to a different mono font, say), a
+          shrunk-but-still-slightly-too-big score clips instead of
+          spilling into the frame grid next to it. */}
+      <div style={{
+        width: "clamp(60px,9vw,140px)", flexShrink: 0, display: "flex", alignItems: "center",
+        justifyContent: "flex-start", overflow: "hidden", containerType: "inline-size",
+      }}>
+        <div style={{
+          fontFamily: T.fontMono,
+          // 42cqh/100px measured ~12% too tall in practice -- this font's
+          // actual glyph ascent+descent exceeds what a lineHeight:1.05 box
+          // implies at these sizes, so the cqh term needed its own margin
+          // beyond just matching the row height on paper. Reduced (not the
+          // width term, which wasn't the binding constraint here) until a
+          // live overflow scan came back clean.
+          fontSize: `min(clamp(23px,37cqh,88px), ${scoreWidthCqw}cqw)`,
+          fontWeight: 700,
+          color: isUp ? T.yellow : T.muted, lineHeight: 1.05, overflow: "hidden",
+        }}>
           {total}
         </div>
       </div>

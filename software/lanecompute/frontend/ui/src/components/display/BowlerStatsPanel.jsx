@@ -10,9 +10,13 @@ function Tile({ label, value, color }) {
       alignItems: "center", justifyContent: "center", gap: "0.3vh",
       borderRadius: "clamp(6px,0.8vmin,12px)",
     }}>
+      {/* 3vh/36px measured ~12% taller than its box in practice -- same
+          font-metrics-exceed-lineHeight:1 gap as BowlerSheet's total score
+          (see DisplayLane.jsx) -- reduced until a live overflow scan came
+          back clean rather than estimated. */}
       <div style={{
-        fontFamily: T.fontDisplay, fontSize: "clamp(16px,3vh,36px)", fontWeight: 700, color: color || T.text,
-        lineHeight: 1, textShadow: `0 0 14px ${(color || T.text)}44`,
+        fontFamily: T.fontDisplay, fontSize: "clamp(14px,2.6vh,32px)", fontWeight: 700, color: color || T.text,
+        lineHeight: 1, textShadow: `0 0 14px ${(color || T.text)}44`, overflow: "hidden",
       }}>{value}</div>
       <div style={{ fontFamily: T.fontMono, fontSize: "clamp(6px,0.9vh,11px)", color: T.muted, letterSpacing: "0.12em" }}>{label}</div>
     </div>
