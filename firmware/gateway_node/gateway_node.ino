@@ -147,6 +147,12 @@ struct UartBeamEventPayload {   // matches scoring/protocol.py's BEAM_EVENT_FMT
   uint32_t timestampMs;
 };
 
+struct UartPinsetterStatusPayload {   // matches scoring/protocol.py's STATUS_EVENT_FMT
+  uint8_t statusCode;                 // StatusCode, see enum above
+  uint8_t laneNumber;                 // 0 for node-level status codes, see PROTOCOL.md
+  uint32_t timestampMs;
+};
+
 struct PinsetterCommandFromPi { // Pi -> gateway, any CommandCode (cycle, rerack, ...)
   uint8_t command;
   uint8_t laneNumber;
@@ -164,8 +170,9 @@ struct ScoreEventFromPi {       // Pi -> gateway, then broadcast onto ESP-NOW as
 
 enum UartMsgType : uint8_t {
   // Gateway -> Pi
-  UART_LANE_EVENT = 0x01,
-  UART_BEAM_EVENT = 0x02,
+  UART_LANE_EVENT         = 0x01,
+  UART_BEAM_EVENT         = 0x02,
+  UART_PINSETTER_STATUS   = 0x03,  // forwards a pinsetter MSG_STATUS verbatim (any StatusCode, including STATUS_CYCLE_COMPLETE)
   // Pi -> Gateway
   UART_PINSETTER_COMMAND = 0x10,  // any CommandCode -- generalized from the old cycle-only message
   UART_SCORE_EVENT       = 0x11,
@@ -483,6 +490,7 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       logMachineRecords(msg.data);
 
       sendStatusAck(msg.seq);
+      forwardStatusToPi(msg);
       break;
     }
 
@@ -577,6 +585,14 @@ void forwardBeamEventToPi(const NodeMessage &msg) {
   p.beamRole = msg.data[0];
   p.timestampMs = msg.timestampMs;
   sendToPi(UART_BEAM_EVENT, (const uint8_t *)&p, sizeof(p));
+}
+
+void forwardStatusToPi(const NodeMessage &msg) {
+  UartPinsetterStatusPayload p;
+  p.statusCode = msg.code;
+  p.laneNumber = msg.laneNumber;
+  p.timestampMs = msg.timestampMs;
+  sendToPi(UART_PINSETTER_STATUS, (const uint8_t *)&p, sizeof(p));
 }
 
 void broadcastScoreEvent(uint8_t laneNumber, uint8_t ballNumber, uint16_t pinfallMask, uint32_t timestampMs) {

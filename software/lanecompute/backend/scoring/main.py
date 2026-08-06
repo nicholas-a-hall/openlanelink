@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 import api
 import protocol
 import speed
+import state_machine
 from uart_bridge import UartBridge
 
 logging.basicConfig(level=logging.INFO)
@@ -64,7 +65,16 @@ def _schedule_broadcast(coro) -> None:
 
 def on_lane_event(ev):
     log.info("LaneEvent: %s", ev)
-    # TODO: feed fouls into game state.
+    if ev.event_type != protocol.EVENT_FOUL:
+        return  # CLEAR is informational only, nothing to act on
+
+    machine = state_machine.get_machine(ev.lane_number, bridge)
+    try:
+        machine.on_foul()
+    except state_machine.InvalidTransitionError as e:
+        log.warning("Lane %s: %s", ev.lane_number, e)
+        return
+    _schedule_broadcast(api.broadcast_state(ev.lane_number))
 
 
 def on_beam_event(ev):
@@ -72,9 +82,20 @@ def on_beam_event(ev):
     if ev.event_type != protocol.EVENT_BEAM_BROKEN:
         return  # only the BROKEN edge matters for timing; CLEAR is informational
 
+    machine = state_machine.get_machine(ev.lane_number, bridge)
+
     if ev.beam_role == protocol.ROLE_UPSTREAM:
         _pending_upstream[ev.lane_number] = (ev.timestamp_ms, time.monotonic())
+        machine.on_upstream_beam()
+        _schedule_broadcast(api.broadcast_state(ev.lane_number))
         return
+
+    # The ball reached the pins regardless of whether a speed can also be
+    # computed for it below, so drive the state machine first -- the speed
+    # pairing that follows can still bail out early on a missing/expired
+    # upstream reading without that affecting AWAITING_PINFALL.
+    machine.on_downstream_beam()
+    _schedule_broadcast(api.broadcast_state(ev.lane_number))
 
     pending = _pending_upstream.pop(ev.lane_number, None)
     if pending is None:
@@ -96,10 +117,18 @@ def on_beam_event(ev):
     # daemon for ev.lane_number -- that's a SEPARATE, un-Dockerized process
     # with direct camera access (see vision/README.md), not something this
     # process calls into directly. Integration mechanism not decided yet.
-    # Once a pinfall result comes back (however that ends up happening),
-    # this is the place to score it and:
-    #   bridge.send_score_event(ev.lane_number, ball_number, pinfall_mask, timestamp_ms)
-    #   bridge.send_cycle(ev.lane_number)
+    # Once vision exists, it should feed its pinfall count into
+    # state_machine.on_pinfall_observed() the same way
+    # POST /api/lanes/{lane}/pinfall does today (api.py) -- that call
+    # already handles recording the ball and sending cycle/rerack.
+
+
+def on_status_event(ev):
+    log.info("StatusEvent: %s", ev)
+    if ev.status_code != protocol.STATUS_CYCLE_COMPLETE:
+        return  # other status codes (heartbeat, relay fault, ...) not acted on yet
+    state_machine.get_machine(ev.lane_number, bridge).on_cycle_complete()
+    _schedule_broadcast(api.broadcast_state(ev.lane_number))
 
 
 bridge = UartBridge(
@@ -107,6 +136,7 @@ bridge = UartBridge(
     PI_UART_BAUD,
     on_lane_event=on_lane_event,
     on_beam_event=on_beam_event,
+    on_status_event=on_status_event,
 )
 
 

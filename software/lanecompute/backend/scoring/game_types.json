@@ -1,0 +1,29 @@
+{
+  "ten_pin": {
+    "displayName": "Ten-Pin",
+    "frameCount": 10,
+    "pinsPerThrowMax": 10,
+    "strikeThreshold": 10,
+    "regularFrameMaxBalls": 2,
+    "strikeBonusBalls": 2,
+    "markBonusBalls": 1
+  },
+  "no_tap": {
+    "displayName": "No-Tap (9-Pin Tap)",
+    "frameCount": 10,
+    "pinsPerThrowMax": 10,
+    "strikeThreshold": 9,
+    "regularFrameMaxBalls": 2,
+    "strikeBonusBalls": 2,
+    "markBonusBalls": 1
+  },
+  "duckpin": {
+    "displayName": "Duckpin",
+    "frameCount": 10,
+    "pinsPerThrowMax": 10,
+    "strikeThreshold": 10,
+    "regularFrameMaxBalls": 3,
+    "strikeBonusBalls": 2,
+    "markBonusBalls": 1
+  }
+}

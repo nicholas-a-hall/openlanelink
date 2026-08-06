@@ -305,12 +305,18 @@ padding to 4-byte-align the `uint32_t` — this is why `NodeMessage`'s
 `MachineRecord`'s `cooldownMs` (`uint16_t`) only needs 2-byte alignment,
 which it already has at offset 2, so it has zero padding.
 
-## Gateway ↔ Pi UART boundary is unaffected
+## Gateway ↔ Pi UART boundary
 The gateway translates between the mesh (ESP-NOW/RS485) and the Pi's UART
 link — it is not a raw pass-through of mesh bytes. The Pi-facing UART
-protocol (`UART_LANE_EVENT`, `UART_BEAM_EVENT`, `UART_PINSETTER_COMMAND`,
-`UART_SCORE_EVENT`, documented in `HANDOFF.md`'s "Gateway <-> Pi UART bridge"
-section) **does not change** as part of any of this: the gateway receives a
-`NodeMessage` off whichever transport it arrived on and extracts the fields
-it needs to build the same compact UART payloads it already sent.
-`scoring/protocol.py` and `scoring/main.py` on the Pi need no changes.
+protocol (`UART_LANE_EVENT`, `UART_BEAM_EVENT`, `UART_PINSETTER_STATUS`,
+`UART_PINSETTER_COMMAND`, `UART_SCORE_EVENT`, documented in `HANDOFF.md`'s
+"Gateway <-> Pi UART bridge" section) was **unaffected by this doc's ESP-NOW
+protocol unification**: the gateway receives a `NodeMessage` off whichever
+transport it arrived on and extracts the fields it needs to build the same
+compact UART payloads it already sent, regardless of which wire it came in
+on. It has since gained one new payload, `UART_PINSETTER_STATUS` (added
+2026-08-06), which forwards every pinsetter `MSG_STATUS` down to the Pi
+verbatim (`statusCode`, `laneNumber`, `timestampMs`) — added so the Pi's game
+state machine has a real `STATUS_CYCLE_COMPLETE` signal instead of guessing
+off a fixed timeout after sending `CMD_CYCLE`/`CMD_RERACK`. See
+`scoring/protocol.py`'s `StatusEvent` for the Pi-side decode.

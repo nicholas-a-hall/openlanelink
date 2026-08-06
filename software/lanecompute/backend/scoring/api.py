@@ -24,6 +24,8 @@ from pydantic import BaseModel
 
 import assistance
 import game_state
+import game_types
+import state_machine
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +48,21 @@ def _bridge():
     if not bridge.connected:
         raise HTTPException(status_code=503, detail="UART bridge not connected to gateway")
     return bridge
+
+
+def _bridge_object():
+    """Unlike _bridge(), doesn't require a live connection -- game-state
+    mutations (starting a game, recording a ball) work without hardware
+    attached; only the mesh command a ball's turnOver triggers actually
+    needs one, and UartBridge.send_cycle/send_rerack already no-op safely
+    (log + drop) when disconnected."""
+    return getattr(app.state, "bridge", None)
+
+
+def _lane_snapshot(lane: int) -> dict:
+    data = game_state.get_lane(lane).snapshot()
+    data.update(state_machine.get_machine(lane, _bridge_object()).snapshot())
+    return data
 
 
 # ---- WebSocket broadcast ----
@@ -74,14 +91,15 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def _broadcast_state(lane: int) -> None:
-    await manager.broadcast(lane, {"type": "state", "lane": lane, "data": game_state.get_lane(lane).snapshot()})
+# Both broadcast_state and broadcast_event are public (no leading
+# underscore) -- main.py calls them directly for mesh-originated events
+# (fouls, beam pairing, pinsetter status, ball speed) that drive
+# state_machine.py and mutate game_state outside of a REST handler, not just
+# this module's own routes below.
+async def broadcast_state(lane: int) -> None:
+    await manager.broadcast(lane, {"type": "state", "lane": lane, "data": _lane_snapshot(lane)})
 
 
-# Public (no leading underscore) -- main.py also calls this directly for
-# mesh-originated events (e.g. ball speed) that don't come through a REST
-# mutation. _broadcast_state above stays internal to this module's own
-# route handlers, which are the only things that mutate game_state.
 async def broadcast_event(lane: int, event: str, data: dict) -> None:
     await manager.broadcast(lane, {"type": "event", "lane": lane, "event": event, "data": data})
 
@@ -93,7 +111,7 @@ async def _serve_broadcast_socket(websocket: WebSocket, lane: int) -> None:
     await manager.connect(lane, websocket)
     # Send current state immediately so a new client isn't waiting on the
     # next mutation to see anything.
-    await websocket.send_json({"type": "state", "lane": lane, "data": game_state.get_lane(lane).snapshot()})
+    await websocket.send_json({"type": "state", "lane": lane, "data": _lane_snapshot(lane)})
     try:
         while True:
             # Read-only: nothing the client sends is acted on. Commands go
@@ -143,21 +161,22 @@ class BowlerUpdate(BaseModel):
 
 
 class ScoreEdit(BaseModel):
-    ball_index: int
+    frame_number: int
+    ball_in_frame: int
     pinfall: int
 
 
 @app.get("/api/lanes/{lane}")
 async def get_lane_snapshot(lane: int):
     _require_valid_lane(lane)
-    return game_state.get_lane(lane).snapshot()
+    return _lane_snapshot(lane)
 
 
 @app.post("/api/lanes/{lane}/bowlers")
 async def add_bowler(lane: int, body: BowlerCreate):
     _require_valid_lane(lane)
     bowler = game_state.get_lane(lane).add_bowler(body.name)
-    await _broadcast_state(lane)
+    await broadcast_state(lane)
     return {"id": bowler.id, "name": bowler.name}
 
 
@@ -168,7 +187,7 @@ async def edit_bowler(lane: int, bowler_id: str, body: BowlerUpdate):
         bowler = game_state.get_lane(lane).edit_bowler(bowler_id, body.name)
     except game_state.UnknownBowlerError:
         raise HTTPException(status_code=404, detail=f"no bowler {bowler_id} on lane {lane}")
-    await _broadcast_state(lane)
+    await broadcast_state(lane)
     return {"id": bowler.id, "name": bowler.name}
 
 
@@ -179,29 +198,62 @@ async def remove_bowler(lane: int, bowler_id: str):
         game_state.get_lane(lane).remove_bowler(bowler_id)
     except game_state.UnknownBowlerError:
         raise HTTPException(status_code=404, detail=f"no bowler {bowler_id} on lane {lane}")
-    await _broadcast_state(lane)
+    await broadcast_state(lane)
     return {"ok": True}
 
 
+class GameCreate(BaseModel):
+    game_type: str = "ten_pin"
+
+
 @app.post("/api/lanes/{lane}/games")
-async def add_game(lane: int):
+async def add_game(lane: int, body: GameCreate = GameCreate()):
     _require_valid_lane(lane)
-    game = game_state.get_lane(lane).add_game()
-    await _broadcast_state(lane)
-    return {"id": game.id, "startedAtMs": game.started_at_ms}
+    try:
+        gt = game_types.get_game_type(body.game_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    game = game_state.get_lane(lane).add_game(gt)
+    state_machine.get_machine(lane, _bridge_object()).begin_game()
+    await broadcast_state(lane)
+    return {"id": game.id, "startedAtMs": game.started_at_ms, "gameType": gt.name}
 
 
 @app.put("/api/lanes/{lane}/bowlers/{bowler_id}/score")
 async def edit_score(lane: int, bowler_id: str, body: ScoreEdit):
     _require_valid_lane(lane)
     try:
-        game_state.get_lane(lane).edit_score(bowler_id, body.ball_index, body.pinfall)
+        game_state.get_lane(lane).edit_score(bowler_id, body.frame_number, body.ball_in_frame, body.pinfall)
     except game_state.UnknownBowlerError:
         raise HTTPException(status_code=404, detail=f"no bowler {bowler_id} on lane {lane}")
     except (ValueError, IndexError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    await _broadcast_state(lane)
+    await broadcast_state(lane)
     return game_state.get_lane(lane).frames(bowler_id)
+
+
+class PinfallObserved(BaseModel):
+    pinfall: int
+
+
+@app.post("/api/lanes/{lane}/pinfall")
+async def report_pinfall(lane: int, body: PinfallObserved):
+    """Manual pinfall entry -- stands in for vision/pinfall.py until that's
+    built (see state_machine.py's on_pinfall_observed). Usable from a bowler
+    tablet or staff UI today; vision will call the same state-machine hook
+    later without this endpoint's shape needing to change. Only valid while
+    the lane is actually AWAITING_PINFALL (i.e. a ball has been detected by
+    the beam sensors) -- not a free-form "add a ball" endpoint."""
+    _require_valid_lane(lane)
+    machine = state_machine.get_machine(lane, _bridge_object())
+    try:
+        machine.on_pinfall_observed(body.pinfall)
+    except state_machine.InvalidTransitionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await broadcast_state(lane)
+    return _lane_snapshot(lane)
 
 
 # ---- Isolated: request assistance (separate from game state -- see assistance.py) ----

@@ -29,12 +29,13 @@ class UartBridge:
     # attached, and recovers on its own once a gateway is plugged in.
     RECONNECT_INTERVAL_S = 5.0
 
-    def __init__(self, port: str, baud: int = 115200, on_lane_event=None, on_beam_event=None):
+    def __init__(self, port: str, baud: int = 115200, on_lane_event=None, on_beam_event=None, on_status_event=None):
         self._port = port
         self._baud = baud
         self._ser: serial.Serial | None = None
         self._on_lane_event = on_lane_event
         self._on_beam_event = on_beam_event
+        self._on_status_event = on_status_event
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
 
@@ -149,5 +150,8 @@ class UartBridge:
         elif msg_type == p.UART_BEAM_EVENT:
             if self._on_beam_event:
                 self._on_beam_event(p.BeamEvent.decode(body))
+        elif msg_type == p.UART_PINSETTER_STATUS:
+            if self._on_status_event:
+                self._on_status_event(p.StatusEvent.decode(body))
         else:
             log.warning("unhandled UART message type 0x%02x", msg_type)

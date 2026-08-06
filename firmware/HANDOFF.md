@@ -156,10 +156,19 @@ obvious in logs:
 **Gateway → Pi** (mesh events forwarded down to the Pi, unmodified — no logic applied):
 ```cpp
 enum UartMsgType : uint8_t {
-  UART_LANE_EVENT = 0x01,  // forwards a fouling node's MSG_LANE_EVENT verbatim
-  UART_BEAM_EVENT = 0x02,  // forwards a speed node's MSG_BEAM_EVENT verbatim
+  UART_LANE_EVENT       = 0x01,  // forwards a fouling node's MSG_LANE_EVENT verbatim
+  UART_BEAM_EVENT       = 0x02,  // forwards a speed node's MSG_BEAM_EVENT verbatim
+  UART_PINSETTER_STATUS = 0x03,  // forwards a pinsetter MSG_STATUS verbatim (any StatusCode)
 };
 ```
+`UART_PINSETTER_STATUS` was added 2026-08-06 so the Pi's game state machine has a
+real signal for `STATUS_CYCLE_COMPLETE` instead of guessing off a timeout —
+every `MSG_STATUS` the gateway receives (any `StatusCode`, not just cycle
+completion) is forwarded down verbatim, same "forward raw, let the Pi decide"
+pattern as lane/beam events. Only `statusCode`, `laneNumber`, and
+`timestampMs` cross the wire — the `MachineRecord` array in the original
+`MSG_STATUS` (`data[2..17]`) is not forwarded; add it later if the Pi ever
+needs relay/DI state, not just "which status code fired."
 
 **Pi → Gateway** (commands/results the Pi emits):
 ```cpp
