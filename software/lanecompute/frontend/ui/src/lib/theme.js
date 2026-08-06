@@ -2,7 +2,7 @@
    DESIGN TOKENS — Midnight Arcade
    Shared by the display (16:9 overhead monitor) and control
    (9:16 tablet) screens so both read as one system.
-   Ported from scoredash.jsx / lunar-lanes-scoring.jsx.
+   Ported from scoredash.jsx / openlanescheduler-scoring.jsx.
    ═══════════════════════════════════ */
 export const T = {
   bg:      "#0c0b14",

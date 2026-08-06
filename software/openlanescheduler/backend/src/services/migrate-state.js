@@ -9,7 +9,7 @@ const { createClient } = require('redis');
 const StateManager = require('./StateManager');
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const OLD_KEY = 'lunar-lanes:state';
+const OLD_KEY = 'openlanescheduler:state';
 
 async function migrate() {
   console.log('[Migration] Starting state migration...');

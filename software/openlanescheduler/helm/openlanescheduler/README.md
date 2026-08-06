@@ -1,6 +1,6 @@
-# Lunar Lanes Helm Chart
+# OpenLane Scheduler Helm Chart
 
-This Helm chart deploys the Lunar Lanes bowling alley management system to a Kubernetes cluster.
+This Helm chart deploys the OpenLane Scheduler bowling alley management system to a Kubernetes cluster.
 
 ## Prerequisites
 
@@ -15,20 +15,20 @@ This Helm chart deploys the Lunar Lanes bowling alley management system to a Kub
 
 ```bash
 # Add the Helm chart repository (if published)
-helm repo add lunar-lanes https://your-repo.example.com
+helm repo add openlanescheduler https://your-repo.example.com
 helm repo update
 
 # Install with default values
-helm install my-lunar-lanes lunar-lanes/lunar-lanes
+helm install my-openlanescheduler openlanescheduler/openlanescheduler
 
 # Or install from local chart directory
-helm install my-lunar-lanes ./lunar-lanes
+helm install my-openlanescheduler ./openlanescheduler
 ```
 
 ### Install with Custom Values
 
 ```bash
-helm install my-lunar-lanes lunar-lanes/lunar-lanes \
+helm install my-openlanescheduler openlanescheduler/openlanescheduler \
   --set backend.googleCalendar.apiKey="YOUR_API_KEY" \
   --set backend.googleCalendar.calendarId="YOUR_CALENDAR_ID" \
   --set ingress.hosts[0].host="bowling.example.com"
@@ -62,7 +62,7 @@ ingress:
 EOF
 
 # Install with custom values
-helm install my-lunar-lanes lunar-lanes/lunar-lanes -f custom-values.yaml
+helm install my-openlanescheduler openlanescheduler/openlanescheduler -f custom-values.yaml
 ```
 
 ## Configuration
@@ -91,7 +91,7 @@ helm install my-lunar-lanes lunar-lanes/lunar-lanes -f custom-values.yaml
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `backend.replicaCount` | Number of replicas | `1` |
-| `backend.image.repository` | Backend image | `lunar-lanes/backend` |
+| `backend.image.repository` | Backend image | `openlanescheduler/backend` |
 | `backend.image.tag` | Backend image tag | `latest` |
 | `backend.service.type` | Service type | `ClusterIP` |
 | `backend.service.port` | Service port | `3001` |
@@ -108,7 +108,7 @@ helm install my-lunar-lanes lunar-lanes/lunar-lanes -f custom-values.yaml
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `frontend.replicaCount` | Number of replicas | `1` |
-| `frontend.image.repository` | Frontend image | `lunar-lanes/frontend` |
+| `frontend.image.repository` | Frontend image | `openlanescheduler/frontend` |
 | `frontend.image.tag` | Frontend image tag | `latest` |
 | `frontend.service.type` | Service type | `ClusterIP` |
 | `frontend.service.port` | Service port | `80` |
@@ -121,7 +121,7 @@ helm install my-lunar-lanes lunar-lanes/lunar-lanes -f custom-values.yaml
 |-----------|-------------|---------|
 | `kiosk.enabled` | Enable kiosk deployments | `true` |
 | `kiosk.deployments` | List of kiosk instances | See values.yaml |
-| `kiosk.image.repository` | Kiosk image | `lunar-lanes/kiosk` |
+| `kiosk.image.repository` | Kiosk image | `openlanescheduler/kiosk` |
 | `kiosk.image.tag` | Kiosk image tag | `latest` |
 | `kiosk.resources.requests.memory` | Memory request | `128Mi` |
 | `kiosk.resources.limits.memory` | Memory limit | `256Mi` |
@@ -133,7 +133,7 @@ helm install my-lunar-lanes lunar-lanes/lunar-lanes -f custom-values.yaml
 | `ingress.enabled` | Enable ingress | `true` |
 | `ingress.className` | Ingress class | `nginx` |
 | `ingress.annotations` | Ingress annotations | See values.yaml |
-| `ingress.hosts` | Ingress hosts | `lunar-lanes.local` |
+| `ingress.hosts` | Ingress hosts | `openlanescheduler.local` |
 | `ingress.tls` | TLS configuration | See values.yaml |
 
 ## Google Calendar Integration
@@ -183,7 +183,7 @@ backend:
 # Create secret from file
 kubectl create secret generic gcal-service-account \
   --from-file=service-account.json=./path/to/service-account.json \
-  -n lunar-lanes
+  -n openlanescheduler
 
 # Then reference in values
 backend:
@@ -209,15 +209,15 @@ Once deployed with ingress enabled:
 
 ```bash
 # Manager dashboard
-kubectl port-forward svc/my-lunar-lanes-frontend 8080:80
+kubectl port-forward svc/my-openlanescheduler-frontend 8080:80
 # Access at http://localhost:8080
 
 # Backend API
-kubectl port-forward svc/my-lunar-lanes-backend 3001:3001
+kubectl port-forward svc/my-openlanescheduler-backend 3001:3001
 # Access at http://localhost:3001
 
 # Kiosk (Lanes 1-2)
-kubectl port-forward svc/my-lunar-lanes-kiosk-lanes-1-2 8081:8081
+kubectl port-forward svc/my-openlanescheduler-kiosk-lanes-1-2 8081:8081
 # Access at http://localhost:8081
 ```
 
@@ -249,7 +249,7 @@ redis:
 
 ```bash
 # Scale backend replicas
-helm upgrade my-lunar-lanes lunar-lanes/lunar-lanes \
+helm upgrade my-openlanescheduler openlanescheduler/openlanescheduler \
   --set backend.replicaCount=3
 ```
 
@@ -267,10 +267,10 @@ autoscaling:
 
 ```bash
 # Upgrade with new values
-helm upgrade my-lunar-lanes lunar-lanes/lunar-lanes -f custom-values.yaml
+helm upgrade my-openlanescheduler openlanescheduler/openlanescheduler -f custom-values.yaml
 
 # Upgrade with specific parameters
-helm upgrade my-lunar-lanes lunar-lanes/lunar-lanes \
+helm upgrade my-openlanescheduler openlanescheduler/openlanescheduler \
   --set backend.image.tag=v2.0.0
 ```
 
@@ -278,10 +278,10 @@ helm upgrade my-lunar-lanes lunar-lanes/lunar-lanes \
 
 ```bash
 # Uninstall release
-helm uninstall my-lunar-lanes
+helm uninstall my-openlanescheduler
 
 # If persistence was enabled, manually delete PVC
-kubectl delete pvc data-my-lunar-lanes-redis-0
+kubectl delete pvc data-my-openlanescheduler-redis-0
 ```
 
 ## Monitoring
@@ -303,7 +303,7 @@ kubectl logs -l app.kubernetes.io/component=backend -f
 kubectl logs -l app.kubernetes.io/component=frontend -f
 
 # All pods
-kubectl logs -l app.kubernetes.io/instance=my-lunar-lanes -f --all-containers
+kubectl logs -l app.kubernetes.io/instance=my-openlanescheduler -f --all-containers
 ```
 
 ## Troubleshooting
@@ -312,7 +312,7 @@ kubectl logs -l app.kubernetes.io/instance=my-lunar-lanes -f --all-containers
 
 ```bash
 # Check pod status
-kubectl get pods -l app.kubernetes.io/instance=my-lunar-lanes
+kubectl get pods -l app.kubernetes.io/instance=my-openlanescheduler
 
 # Describe problematic pod
 kubectl describe pod <pod-name>
@@ -325,7 +325,7 @@ kubectl get events --sort-by=.metadata.creationTimestamp
 
 ```bash
 # Test Redis connection
-kubectl exec -it <backend-pod-name> -- redis-cli -h my-lunar-lanes-redis ping
+kubectl exec -it <backend-pod-name> -- redis-cli -h my-openlanescheduler-redis ping
 
 # Check Redis logs
 kubectl logs -l app.kubernetes.io/component=redis
@@ -338,7 +338,7 @@ Ensure ingress is configured for WebSocket support:
 ```yaml
 ingress:
   annotations:
-    nginx.ingress.kubernetes.io/websocket-services: "lunar-lanes-backend"
+    nginx.ingress.kubernetes.io/websocket-services: "openlanescheduler-backend"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 ```
@@ -350,7 +350,7 @@ ingress:
 kubectl logs -l app.kubernetes.io/component=backend | grep -i gcal
 
 # Verify secrets are set
-kubectl get secret my-lunar-lanes-secrets -o yaml
+kubectl get secret my-openlanescheduler-secrets -o yaml
 ```
 
 ## Security Considerations
@@ -372,11 +372,11 @@ kubectl get secret my-lunar-lanes-secrets -o yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: lunar-lanes-network-policy
+  name: openlanescheduler-network-policy
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: lunar-lanes
+      app.kubernetes.io/name: openlanescheduler
   policyTypes:
     - Ingress
     - Egress
@@ -384,7 +384,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: lunar-lanes
+              app.kubernetes.io/name: openlanescheduler
   egress:
     - to:
         - podSelector:
@@ -446,7 +446,7 @@ redis:
 ## Support
 
 For issues and questions:
-- GitHub Issues: https://github.com/yourusername/lunar-lanes/issues
+- GitHub Issues: https://github.com/yourusername/openlanescheduler/issues
 - Documentation: See USER_MANUAL.md and DEVELOPER_GUIDE.md
 
 ## License

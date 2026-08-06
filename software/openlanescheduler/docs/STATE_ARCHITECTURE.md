@@ -18,7 +18,7 @@ state = {
 };
 
 // Stored as single JSON string
-await redis.set('lunar-lanes:state', JSON.stringify(state));
+await redis.set('openlanescheduler:state', JSON.stringify(state));
 
 // Broadcast entire state to ALL clients on EVERY change
 io.emit('state', state);
@@ -74,20 +74,20 @@ io.emit('state', state);
 **Structure:**
 ```javascript
 // Instead of one key:
-redis.set('lunar-lanes:state', JSON.stringify(everything))
+redis.set('openlanescheduler:state', JSON.stringify(everything))
 
 // Use separate keys:
-redis.set('lunar-lanes:walk-ins', JSON.stringify(walkIns))
-redis.set('lunar-lanes:maintenance', JSON.stringify(maintenance))
-redis.set('lunar-lanes:groups', JSON.stringify(groups))
-redis.set('lunar-lanes:service-calls', JSON.stringify(serviceCalls))
+redis.set('openlanescheduler:walk-ins', JSON.stringify(walkIns))
+redis.set('openlanescheduler:maintenance', JSON.stringify(maintenance))
+redis.set('openlanescheduler:groups', JSON.stringify(groups))
+redis.set('openlanescheduler:service-calls', JSON.stringify(serviceCalls))
 
 // Reservations by date (time-based partitioning)
-redis.set('lunar-lanes:reservations:2026-02-15', JSON.stringify([...]))
-redis.set('lunar-lanes:reservations:2026-02-16', JSON.stringify([...]))
+redis.set('openlanescheduler:reservations:2026-02-15', JSON.stringify([...]))
+redis.set('openlanescheduler:reservations:2026-02-16', JSON.stringify([...]))
 
 // Archive old reservations
-redis.set('lunar-lanes:archive:2026-01', JSON.stringify([...]))
+redis.set('openlanescheduler:archive:2026-01', JSON.stringify([...]))
 ```
 
 **Benefits:**
@@ -102,16 +102,16 @@ redis.set('lunar-lanes:archive:2026-01', JSON.stringify([...]))
 
 class StateManager {
   async getWalkIns() {
-    const data = await redis.get('lunar-lanes:walk-ins');
+    const data = await redis.get('openlanescheduler:walk-ins');
     return data ? JSON.parse(data) : [];
   }
 
   async setWalkIns(walkIns) {
-    await redis.set('lunar-lanes:walk-ins', JSON.stringify(walkIns));
+    await redis.set('openlanescheduler:walk-ins', JSON.stringify(walkIns));
   }
 
   async getReservationsForDate(date) {
-    const data = await redis.get(`lunar-lanes:reservations:${date}`);
+    const data = await redis.get(`openlanescheduler:reservations:${date}`);
     return data ? JSON.parse(data) : [];
   }
 
@@ -119,7 +119,7 @@ class StateManager {
     const date = reservation.date;
     const existing = await this.getReservationsForDate(date);
     existing.push(reservation);
-    await redis.set(`lunar-lanes:reservations:${date}`, JSON.stringify(existing));
+    await redis.set(`openlanescheduler:reservations:${date}`, JSON.stringify(existing));
   }
 
   // Archive reservations older than 90 days
@@ -139,37 +139,37 @@ class StateManager {
 
 ```javascript
 // Walk-ins (8 max, frequently updated)
-redis.hSet('lunar-lanes:walk-ins', '1', JSON.stringify(walkInData))
-redis.hGet('lunar-lanes:walk-ins', '1')  // Get single lane
-redis.hGetAll('lunar-lanes:walk-ins')    // Get all
+redis.hSet('openlanescheduler:walk-ins', '1', JSON.stringify(walkInData))
+redis.hGet('openlanescheduler:walk-ins', '1')  // Get single lane
+redis.hGetAll('openlanescheduler:walk-ins')    // Get all
 
 // Maintenance flags (simple key-value)
-redis.set('lunar-lanes:maintenance:3', 'true')
-redis.get('lunar-lanes:maintenance:3')
+redis.set('openlanescheduler:maintenance:3', 'true')
+redis.get('openlanescheduler:maintenance:3')
 
 // Service calls with timestamps
-redis.hSet('lunar-lanes:service-calls', '5', JSON.stringify({
+redis.hSet('openlanescheduler:service-calls', '5', JSON.stringify({
   start: Date.now(),
   acked: false,
   origin: 'kiosk'
 }))
 
 // Reservations by date (sorted by start time)
-redis.zAdd('lunar-lanes:res:2026-02-15', [
+redis.zAdd('openlanescheduler:res:2026-02-15', [
   { score: 1400, value: JSON.stringify(reservation) }, // 14:00
   { score: 1600, value: JSON.stringify(reservation) }  // 16:00
 ])
 
 // Query reservations in time range
 const afternoon = await redis.zRangeByScore(
-  'lunar-lanes:res:2026-02-15',
+  'openlanescheduler:res:2026-02-15',
   1200,  // 12:00
   1800   // 18:00
 );
 
 // Reservation index by lane
-redis.sAdd('lunar-lanes:res-by-lane:3', 'res-id-1', 'res-id-2')
-redis.sMembers('lunar-lanes:res-by-lane:3')  // All reservation IDs for lane 3
+redis.sAdd('openlanescheduler:res-by-lane:3', 'res-id-1', 'res-id-2')
+redis.sMembers('openlanescheduler:res-by-lane:3')  // All reservation IDs for lane 3
 ```
 
 **Benefits:**
@@ -184,22 +184,22 @@ redis.sMembers('lunar-lanes:res-by-lane:3')  // All reservation IDs for lane 3
 class StateManager {
   // Get walk-in for specific lane
   async getWalkIn(lane) {
-    const data = await redis.hGet('lunar-lanes:walk-ins', String(lane));
+    const data = await redis.hGet('openlanescheduler:walk-ins', String(lane));
     return data ? JSON.parse(data) : null;
   }
 
   // Set walk-in atomically
   async setWalkIn(lane, walkIn) {
     if (walkIn) {
-      await redis.hSet('lunar-lanes:walk-ins', String(lane), JSON.stringify(walkIn));
+      await redis.hSet('openlanescheduler:walk-ins', String(lane), JSON.stringify(walkIn));
     } else {
-      await redis.hDel('lunar-lanes:walk-ins', String(lane));
+      await redis.hDel('openlanescheduler:walk-ins', String(lane));
     }
   }
 
   // Get all walk-ins
   async getAllWalkIns() {
-    const hash = await redis.hGetAll('lunar-lanes:walk-ins');
+    const hash = await redis.hGetAll('openlanescheduler:walk-ins');
     return Object.entries(hash).map(([lane, data]) => ({
       lane: parseInt(lane),
       ...JSON.parse(data)
@@ -208,7 +208,7 @@ class StateManager {
 
   // Get reservations for date, sorted by time
   async getReservationsForDate(date) {
-    const results = await redis.zRange(`lunar-lanes:res:${date}`, 0, -1);
+    const results = await redis.zRange(`openlanescheduler:res:${date}`, 0, -1);
     return results.map(r => JSON.parse(r));
   }
 
@@ -216,20 +216,20 @@ class StateManager {
   async addReservation(reservation) {
     const score = this.timeToScore(reservation.start); // 14:00 -> 1400
     await redis.zAdd(
-      `lunar-lanes:res:${reservation.date}`,
+      `openlanescheduler:res:${reservation.date}`,
       { score, value: JSON.stringify(reservation) }
     );
 
     // Add to lane index
     await redis.sAdd(
-      `lunar-lanes:res-by-lane:${reservation.lane}`,
+      `openlanescheduler:res-by-lane:${reservation.lane}`,
       reservation.id
     );
   }
 
   // Automatic cleanup with TTL
   async archiveOldDates() {
-    const keys = await redis.keys('lunar-lanes:res:*');
+    const keys = await redis.keys('openlanescheduler:res:*');
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 90);
 
@@ -332,16 +332,16 @@ socket.on('stateUpdate', (update) => {
 
 // Old:
 const state = { reservations, walkIns, maintenance, ... };
-await redis.set('lunar-lanes:state', JSON.stringify(state));
+await redis.set('openlanescheduler:state', JSON.stringify(state));
 
 // New:
 await Promise.all([
-  redis.set('lunar-lanes:walk-ins', JSON.stringify(walkIns)),
-  redis.set('lunar-lanes:maintenance', JSON.stringify(maintenance)),
-  redis.set('lunar-lanes:groups', JSON.stringify(groups)),
-  redis.set('lunar-lanes:service-calls', JSON.stringify(serviceCalls)),
+  redis.set('openlanescheduler:walk-ins', JSON.stringify(walkIns)),
+  redis.set('openlanescheduler:maintenance', JSON.stringify(maintenance)),
+  redis.set('openlanescheduler:groups', JSON.stringify(groups)),
+  redis.set('openlanescheduler:service-calls', JSON.stringify(serviceCalls)),
   ...reservationsByDate.map(([date, res]) =>
-    redis.set(`lunar-lanes:reservations:${date}`, JSON.stringify(res))
+    redis.set(`openlanescheduler:reservations:${date}`, JSON.stringify(res))
   )
 ]);
 ```
@@ -373,7 +373,7 @@ handlers.OPEN_WALKIN = async function({ lane, bowlers, type, games, hours }) {
 
   // Update state
   walkIns.push(walkIn);
-  await redis.set('lunar-lanes:walk-ins', JSON.stringify(walkIns));
+  await redis.set('openlanescheduler:walk-ins', JSON.stringify(walkIns));
 
   // Send delta update (not full state)
   io.emit('stateUpdate', {
@@ -441,11 +441,11 @@ state.reservations.push(reservation);
 ### Recommended: Time-Based Partitioning
 ```javascript
 // Active data (last 30 days)
-redis.set('lunar-lanes:res:2026-02-15', ...)
-redis.set('lunar-lanes:res:2026-02-14', ...)
+redis.set('openlanescheduler:res:2026-02-15', ...)
+redis.set('openlanescheduler:res:2026-02-14', ...)
 
 // Archive (30-90 days old)
-redis.set('lunar-lanes:archive:2026-01', ...)
+redis.set('openlanescheduler:archive:2026-01', ...)
 
 // Historical (90+ days) - move to S3/file storage
 ```
@@ -457,7 +457,7 @@ async function archiveOldReservations() {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 90);
 
-  const keys = await redis.keys('lunar-lanes:res:*');
+  const keys = await redis.keys('openlanescheduler:res:*');
 
   for (const key of keys) {
     const date = key.split(':')[2];
@@ -480,7 +480,7 @@ async function archiveOldReservations() {
 ### Current: No Versioning
 ```javascript
 // Problem: If state gets corrupted, no way to recover
-await redis.set('lunar-lanes:state', JSON.stringify(state));
+await redis.set('openlanescheduler:state', JSON.stringify(state));
 ```
 
 ### Recommended: State Snapshots
@@ -491,12 +491,12 @@ async function snapshot() {
   const state = await loadCurrentState();
 
   await redis.set(
-    `lunar-lanes:snapshot:${timestamp}`,
+    `openlanescheduler:snapshot:${timestamp}`,
     JSON.stringify(state)
   );
 
   // Keep last 10 snapshots
-  const snapshots = await redis.keys('lunar-lanes:snapshot:*');
+  const snapshots = await redis.keys('openlanescheduler:snapshot:*');
   if (snapshots.length > 10) {
     const oldest = snapshots.sort()[0];
     await redis.del(oldest);
@@ -505,7 +505,7 @@ async function snapshot() {
 
 // Restore from snapshot
 async function restore(timestamp) {
-  const snapshot = await redis.get(`lunar-lanes:snapshot:${timestamp}`);
+  const snapshot = await redis.get(`openlanescheduler:snapshot:${timestamp}`);
   // Restore state...
 }
 ```
@@ -518,8 +518,8 @@ async function restore(timestamp) {
 ```javascript
 // Track state size over time
 async function logStateMetrics() {
-  const walkIns = await redis.get('lunar-lanes:walk-ins');
-  const reservations = await redis.keys('lunar-lanes:res:*');
+  const walkIns = await redis.get('openlanescheduler:walk-ins');
+  const reservations = await redis.keys('openlanescheduler:res:*');
 
   console.log({
     walkInsSize: walkIns?.length || 0,

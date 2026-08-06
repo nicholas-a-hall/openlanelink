@@ -1,6 +1,6 @@
-# Contributing to Lunar Lanes
+# Contributing to OpenLane Scheduler
 
-Thank you for your interest in contributing to Lunar Lanes! This document provides guidelines and instructions for contributing to the project.
+Thank you for your interest in contributing to OpenLane Scheduler! This document provides guidelines and instructions for contributing to the project.
 
 ---
 
@@ -55,8 +55,8 @@ Looking for a good first issue? Check out issues labeled:
 
 ```bash
 # Fork the repository on GitHub, then:
-git clone https://github.com/YOUR_USERNAME/lunar-lanes.git
-cd lunar-lanes
+git clone https://github.com/YOUR_USERNAME/openlanescheduler.git
+cd openlanescheduler
 ```
 
 ### 2. Install Dependencies
@@ -122,7 +122,7 @@ npm run dev
 ## Project Structure
 
 ```
-lunar-lanes/
+openlanescheduler/
 ├── backend/          # Node.js + Express + Socket.IO server
 │   ├── server.js     # Main server file
 │   └── googleCalendar.js
@@ -133,7 +133,7 @@ lunar-lanes/
 │       └── components/
 ├── kiosk/            # React kiosk displays
 │   └── src/
-│       └── LunarLanesKiosk.jsx
+│       └── OpenLaneSchedulerKiosk.jsx
 ├── helm/             # Kubernetes deployment charts
 └── docs/             # Documentation
 ```
@@ -457,7 +457,7 @@ console.log('Socket connected:', window.socket?.connected);
 # Check stored data
 redis-cli
 > KEYS *
-> GET lunar-lanes:state
+> GET openlanescheduler:state
 ```
 
 ---
@@ -493,8 +493,8 @@ redis-cli
 
 ## License
 
-By contributing to Lunar Lanes, you agree that your contributions will be licensed under the MIT License.
+By contributing to OpenLane Scheduler, you agree that your contributions will be licensed under the MIT License.
 
 ---
 
-Thank you for contributing to Lunar Lanes! 🎳🌙
+Thank you for contributing to OpenLane Scheduler! 🎳🌙

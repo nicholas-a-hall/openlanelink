@@ -228,7 +228,7 @@ placeholder SVG; `celebrationAssets` defaults to `{}` (no-op).
 ## Reference material this was built from
 
 `dev/doodles/scoredash/src/scoredash.jsx` (finished overhead-dashboard
-prototype) and `dev/doodles/lunar-lanes-scoring.jsx` (per-lane bowler
+prototype) and `dev/doodles/openlanescheduler-scoring.jsx` (per-lane bowler
 control-UI prototype) were the design/behavior references for the
 display and control screens respectively — both were fully self-mocked
 prototypes with no real data layer; see

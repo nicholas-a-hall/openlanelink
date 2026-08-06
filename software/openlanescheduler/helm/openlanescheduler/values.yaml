@@ -1,4 +1,4 @@
-# Default values for lunar-lanes
+# Default values for openlanescheduler
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
@@ -32,7 +32,7 @@ redis:
 backend:
   replicaCount: 1
   image:
-    repository: lunar-lanes/backend
+    repository: openlanescheduler/backend
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
@@ -72,7 +72,7 @@ backend:
 frontend:
   replicaCount: 1
   image:
-    repository: lunar-lanes/frontend
+    repository: openlanescheduler/frontend
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
@@ -105,7 +105,7 @@ kiosk:
       lanes: "7,8"
       port: 8084
   image:
-    repository: lunar-lanes/kiosk
+    repository: openlanescheduler/kiosk
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
@@ -124,11 +124,11 @@ ingress:
   className: "nginx"  # Change to your ingress controller
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/websocket-services: "lunar-lanes-backend"
+    nginx.ingress.kubernetes.io/websocket-services: "openlanescheduler-backend"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
-    - host: lunar-lanes.local
+    - host: openlanescheduler.local
       paths:
         - path: /api
           pathType: Prefix
@@ -159,9 +159,9 @@ ingress:
           service: frontend
           port: 80
   tls:
-    - secretName: lunar-lanes-tls
+    - secretName: openlanescheduler-tls
       hosts:
-        - lunar-lanes.local
+        - openlanescheduler.local
 
 # Service Account
 serviceAccount:

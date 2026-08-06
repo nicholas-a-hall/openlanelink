@@ -1,11 +1,11 @@
-# Lunar Lanes UI/UX Style Guide
+# OpenLane Scheduler UI/UX Style Guide
 **Design System & Visual Standards**
 
 ---
 
 ## Design Philosophy
 
-Lunar Lanes uses a **cyberpunk-inspired, neon-futuristic aesthetic** that evokes:
+OpenLane Scheduler uses a **cyberpunk-inspired, neon-futuristic aesthetic** that evokes:
 - Retro-futuristic bowling alleys
 - High-tech arcade environments
 - Clear, glowing status indicators

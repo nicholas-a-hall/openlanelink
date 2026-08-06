@@ -9,7 +9,7 @@ import NotificationStack from './components/NotificationStack';
 
 const GRACE_MS = 5 * 60 * 1000; // 5 minute grace period
 
-const LunarLanesKiosk = () => {
+const OpenLaneSchedulerKiosk = () => {
   const C = useColors();
   const { connected, state, dispatch } = useSocket();
   const [activePanel, setActivePanel] = useState({ panel: 'home', lane: null });
@@ -236,4 +236,4 @@ const LunarLanesKiosk = () => {
   );
 };
 
-export default LunarLanesKiosk;
+export default OpenLaneSchedulerKiosk;

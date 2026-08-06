@@ -1,8 +1,8 @@
-# Lunar Lanes - Hardware Integration Guide
+# OpenLane Scheduler - Hardware Integration Guide
 
 ## Overview
 
-This guide explains how to integrate ESP32/ESP8266 microcontrollers and PLCs into the Lunar Lanes management system using MQTT for real-time bidirectional communication.
+This guide explains how to integrate ESP32/ESP8266 microcontrollers and PLCs into the OpenLane Scheduler management system using MQTT for real-time bidirectional communication.
 
 **Prerequisites:** MQTT must be enabled in your docker-compose setup. By default, MQTT is disabled to keep the stack simple.
 
@@ -72,7 +72,7 @@ This starts two additional services:
 ### Topic Hierarchy
 
 ```
-lunarlanes/
+openlanescheduler/
 ├── lane/
 │   ├── {1-8}/
 │   │   ├── status              # Publish: backend → Subscribe: ESP32
@@ -98,7 +98,7 @@ lunarlanes/
 ### Message Formats (JSON)
 
 #### Lane Status (Backend → ESP32)
-**Topic:** `lunarlanes/lane/3/status`
+**Topic:** `openlanescheduler/lane/3/status`
 ```json
 {
   "lane": 3,
@@ -113,7 +113,7 @@ lunarlanes/
 ```
 
 #### Service Call (ESP32 → Backend)
-**Topic:** `lunarlanes/lane/3/service_call`
+**Topic:** `openlanescheduler/lane/3/service_call`
 ```json
 {
   "lane": 3,
@@ -124,7 +124,7 @@ lunarlanes/
 ```
 
 #### Ball Return Sensor (ESP32 → Backend)
-**Topic:** `lunarlanes/lane/3/sensor/ball_return`
+**Topic:** `openlanescheduler/lane/3/sensor/ball_return`
 ```json
 {
   "lane": 3,
@@ -135,7 +135,7 @@ lunarlanes/
 ```
 
 #### Next Reservation Display (Backend → ESP32)
-**Topic:** `lunarlanes/lane/3/display/next_reservation`
+**Topic:** `openlanescheduler/lane/3/display/next_reservation`
 ```json
 {
   "lane": 3,
@@ -171,7 +171,7 @@ class MQTTClient extends EventEmitter {
     super();
 
     this.client = mqtt.connect(brokerUrl, {
-      clientId: `lunarlanes-backend-${Date.now()}`,
+      clientId: `openlanescheduler-backend-${Date.now()}`,
       clean: true,
       reconnectPeriod: 1000,
       ...options
@@ -197,13 +197,13 @@ class MQTTClient extends EventEmitter {
 
   subscribeToHardware() {
     // Subscribe to all service calls
-    this.client.subscribe('lunarlanes/lane/+/service_call', { qos: 1 });
+    this.client.subscribe('openlanescheduler/lane/+/service_call', { qos: 1 });
 
     // Subscribe to all sensors
-    this.client.subscribe('lunarlanes/lane/+/sensor/#', { qos: 0 });
+    this.client.subscribe('openlanescheduler/lane/+/sensor/#', { qos: 0 });
 
     // Subscribe to device status
-    this.client.subscribe('lunarlanes/device/+/online', { qos: 1 });
+    this.client.subscribe('openlanescheduler/device/+/online', { qos: 1 });
 
     console.log('[MQTT] Subscribed to hardware topics');
   }
@@ -237,7 +237,7 @@ class MQTTClient extends EventEmitter {
 
   // Publish lane status to hardware
   publishLaneStatus(lane, status) {
-    const topic = `lunarlanes/lane/${lane}/status`;
+    const topic = `openlanescheduler/lane/${lane}/status`;
     const payload = {
       lane,
       status: status.status || 'open',
@@ -257,7 +257,7 @@ class MQTTClient extends EventEmitter {
 
   // Publish next reservation for LCD displays
   publishNextReservation(lane, reservation) {
-    const topic = `lunarlanes/lane/${lane}/display/next_reservation`;
+    const topic = `openlanescheduler/lane/${lane}/display/next_reservation`;
     const payload = reservation ? {
       lane,
       hasReservation: true,
@@ -275,7 +275,7 @@ class MQTTClient extends EventEmitter {
 
   // Emergency stop all lanes
   emergencyStop() {
-    this.client.publish('lunarlanes/global/emergency_stop', JSON.stringify({
+    this.client.publish('openlanescheduler/global/emergency_stop', JSON.stringify({
       timestamp: Date.now(),
       reason: 'manual_trigger'
     }), { qos: 2 });  // Exactly once delivery
@@ -511,7 +511,7 @@ void reconnectMQTT() {
     Serial.print("Connecting to MQTT...");
 
     // Last Will Testament - notify if device goes offline
-    String lwt_topic = "lunarlanes/device/" + String(DEVICE_ID) + "/online";
+    String lwt_topic = "openlanescheduler/device/" + String(DEVICE_ID) + "/online";
     String lwt_message = "{\"online\":false}";
 
     if (client.connect(DEVICE_ID, lwt_topic.c_str(), 1, true, lwt_message.c_str())) {
@@ -521,7 +521,7 @@ void reconnectMQTT() {
       client.publish(lwt_topic.c_str(), "{\"online\":true}", true);
 
       // Subscribe to lane status updates
-      String status_topic = "lunarlanes/lane/" + String(LANE_NUMBER) + "/status";
+      String status_topic = "openlanescheduler/lane/" + String(LANE_NUMBER) + "/status";
       client.subscribe(status_topic.c_str());
 
       Serial.println("Subscribed to: " + status_topic);
@@ -543,7 +543,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 void sendServiceCall() {
-  String topic = "lunarlanes/lane/" + String(LANE_NUMBER) + "/service_call";
+  String topic = "openlanescheduler/lane/" + String(LANE_NUMBER) + "/service_call";
 
   String payload = "{";
   payload += "\"lane\":" + String(LANE_NUMBER) + ",";
@@ -765,7 +765,7 @@ void ballDetected() {
 }
 
 void publishBallReturn() {
-  String topic = "lunarlanes/lane/" + String(LANE_NUMBER) + "/sensor/ball_return";
+  String topic = "openlanescheduler/lane/" + String(LANE_NUMBER) + "/sensor/ball_return";
 
   String payload = "{";
   payload += "\"lane\":" + String(LANE_NUMBER) + ",";
@@ -791,8 +791,8 @@ Use the built-in MQTT client:
 
 1. Add MQTT client library in TIA Portal
 2. Configure connection to broker
-3. Subscribe to `lunarlanes/lane/+/command`
-4. Publish to `lunarlanes/lane/{X}/sensor/#`
+3. Subscribe to `openlanescheduler/lane/+/command`
+4. Publish to `openlanescheduler/lane/{X}/sensor/#`
 
 ### Allen-Bradley CompactLogix
 
@@ -818,7 +818,7 @@ password_file /mosquitto/config/passwd
 Create password file:
 
 ```bash
-mosquitto_passwd -c /path/to/passwd lunarlanes_backend
+mosquitto_passwd -c /path/to/passwd openlanescheduler_backend
 mosquitto_passwd /path/to/passwd esp32_device
 ```
 
@@ -838,15 +838,15 @@ Create `acl.conf`:
 
 ```conf
 # Backend can publish/subscribe to everything
-user lunarlanes_backend
+user openlanescheduler_backend
 topic readwrite #
 
 # ESP32 devices can only publish sensors and subscribe to their lane
 user esp32_lane3
-topic write lunarlanes/lane/3/service_call
-topic write lunarlanes/lane/3/sensor/#
-topic read lunarlanes/lane/3/status
-topic read lunarlanes/lane/3/display/#
+topic write openlanescheduler/lane/3/service_call
+topic write openlanescheduler/lane/3/sensor/#
+topic read openlanescheduler/lane/3/status
+topic read openlanescheduler/lane/3/display/#
 ```
 
 ### 4. Network Isolation
@@ -879,7 +879,7 @@ topic read lunarlanes/lane/3/display/#
 
 ```bash
 # Test broker accessibility
-mosquitto_sub -h <broker_ip> -t lunarlanes/# -v
+mosquitto_sub -h <broker_ip> -t openlanescheduler/# -v
 
 # Check broker logs
 docker logs -f <mosquitto_container>
@@ -931,9 +931,9 @@ docker logs -f <mosquitto_container>
 ## Support
 
 For questions or issues with hardware integration:
-- Check backend logs: `docker logs -f lunarlanes-backend`
-- Check MQTT logs: `docker logs -f lunarlanes-mosquitto`
-- Monitor MQTT traffic: `mosquitto_sub -h localhost -t lunarlanes/# -v`
+- Check backend logs: `docker logs -f openlanescheduler-backend`
+- Check MQTT logs: `docker logs -f openlanescheduler-mosquitto`
+- Monitor MQTT traffic: `mosquitto_sub -h localhost -t openlanescheduler/# -v`
 
 ---
 

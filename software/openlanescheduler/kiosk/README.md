@@ -1,12 +1,12 @@
-# Lunar Lanes Customer Service Kiosk
+# OpenLane Scheduler Customer Service Kiosk
 
-Tablet-based customer service UI for lane-side use at Lunar Lanes bowling alley.
+Tablet-based customer service UI for lane-side use at OpenLane Scheduler bowling alley.
 
 ## Aesthetic
 - Retro-futurism / sci-fi with CRT effects, scan lines, vignette overlay
 - Neon retrowave palette: cyan primary, magenta for pinsetter, green for add functions, orange for staff alerts
 - Orbitron font throughout
-- Matches existing Lunar Lanes dashboard aesthetic
+- Matches existing OpenLane Scheduler dashboard aesthetic
 
 ## Current Features
 
@@ -80,7 +80,7 @@ Opens at http://localhost:3000
 ## File Structure
 ```
 src/
-  LunarLanesKiosk.jsx  # Main component with all styles inline
+  OpenLaneSchedulerKiosk.jsx  # Main component with all styles inline
   main.jsx             # React entry point
 index.html             # HTML template with tablet meta tags
 ```

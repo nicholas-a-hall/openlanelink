@@ -1,6 +1,6 @@
 # MQTT Bridge Service
 
-Bidirectional protocol bridge between MQTT (for hardware devices) and Socket.IO (for the Lunar Lanes backend).
+Bidirectional protocol bridge between MQTT (for hardware devices) and Socket.IO (for the OpenLane Scheduler backend).
 
 ## Architecture
 
@@ -17,17 +17,17 @@ Hardware Devices                                ↕
 
 Listens to MQTT topics from hardware devices and forwards them to the backend:
 
-- **Service Calls**: `lunarlanes/lane/{1-8}/service_call` → `MANAGER_SERVICE_CALL` action
-- **Sensors**: `lunarlanes/lane/{1-8}/sensor/*` → Logged and potentially trigger actions
-- **Device Status**: `lunarlanes/device/{id}/online` → Device monitoring
+- **Service Calls**: `openlanescheduler/lane/{1-8}/service_call` → `MANAGER_SERVICE_CALL` action
+- **Sensors**: `openlanescheduler/lane/{1-8}/sensor/*` → Logged and potentially trigger actions
+- **Device Status**: `openlanescheduler/device/{id}/online` → Device monitoring
 
 ### 2. Socket.IO → MQTT (Backend to Hardware)
 
 Listens to backend state updates and publishes to MQTT:
 
-- **Lane Status**: Backend state changes → `lunarlanes/lane/{1-8}/status`
-- **Next Reservation**: Reservation updates → `lunarlanes/lane/{1-8}/display/next_reservation`
-- **Global Time**: Every state update → `lunarlanes/global/time`
+- **Lane Status**: Backend state changes → `openlanescheduler/lane/{1-8}/status`
+- **Next Reservation**: Reservation updates → `openlanescheduler/lane/{1-8}/display/next_reservation`
+- **Global Time**: Every state update → `openlanescheduler/global/time`
 
 ## MQTT Topics
 
@@ -35,19 +35,19 @@ Listens to backend state updates and publishes to MQTT:
 
 | Topic | QoS | Purpose |
 |-------|-----|---------|
-| `lunarlanes/lane/+/service_call` | 1 | Service call buttons |
-| `lunarlanes/lane/+/sensor/#` | 0 | All sensors (ball return, pins, etc.) |
-| `lunarlanes/device/+/online` | 1 | Device online/offline status |
-| `lunarlanes/device/+/heartbeat` | 0 | Device health checks |
+| `openlanescheduler/lane/+/service_call` | 1 | Service call buttons |
+| `openlanescheduler/lane/+/sensor/#` | 0 | All sensors (ball return, pins, etc.) |
+| `openlanescheduler/device/+/online` | 1 | Device online/offline status |
+| `openlanescheduler/device/+/heartbeat` | 0 | Device health checks |
 
 ### Published (To Hardware)
 
 | Topic | QoS | Retain | Purpose |
 |-------|-----|--------|---------|
-| `lunarlanes/lane/{1-8}/status` | 0 | Yes | Current lane status |
-| `lunarlanes/lane/{1-8}/display/next_reservation` | 0 | Yes | Upcoming reservation info |
-| `lunarlanes/global/time` | 0 | Yes | System time sync |
-| `lunarlanes/bridge/status` | 1 | Yes | Bridge online/offline |
+| `openlanescheduler/lane/{1-8}/status` | 0 | Yes | Current lane status |
+| `openlanescheduler/lane/{1-8}/display/next_reservation` | 0 | Yes | Upcoming reservation info |
+| `openlanescheduler/global/time` | 0 | Yes | System time sync |
+| `openlanescheduler/bridge/status` | 1 | Yes | Bridge online/offline |
 
 ## Message Formats
 
@@ -154,10 +154,10 @@ LOG_LEVEL=debug npm start
 ## Docker
 
 ```bash
-docker build -t lunarlanes-mqtt-bridge .
+docker build -t openlanescheduler-mqtt-bridge .
 docker run -e MQTT_BROKER_URL=mqtt://mosquitto:1883 \
            -e BACKEND_URL=http://backend:3001 \
-           lunarlanes-mqtt-bridge
+           openlanescheduler-mqtt-bridge
 ```
 
 ## Monitoring
@@ -167,15 +167,15 @@ docker run -e MQTT_BROKER_URL=mqtt://mosquitto:1883 \
 Subscribe to bridge status to monitor health:
 
 ```bash
-mosquitto_sub -h localhost -t lunarlanes/bridge/status -v
+mosquitto_sub -h localhost -t openlanescheduler/bridge/status -v
 ```
 
 ### All MQTT Traffic
 
-Monitor all Lunar Lanes MQTT traffic:
+Monitor all OpenLane Scheduler MQTT traffic:
 
 ```bash
-mosquitto_sub -h localhost -t lunarlanes/# -v
+mosquitto_sub -h localhost -t openlanescheduler/# -v
 ```
 
 ### Logs
@@ -194,7 +194,7 @@ docker-compose logs mqtt-bridge | grep ERROR
 
 ```bash
 mosquitto_pub -h localhost \
-  -t lunarlanes/lane/3/service_call \
+  -t openlanescheduler/lane/3/service_call \
   -m '{"lane":3,"timestamp":1708023456,"origin":"test","deviceId":"test-device"}'
 ```
 
@@ -202,14 +202,14 @@ mosquitto_pub -h localhost \
 
 ```bash
 mosquitto_pub -h localhost \
-  -t lunarlanes/lane/3/sensor/ball_return \
+  -t openlanescheduler/lane/3/sensor/ball_return \
   -m '{"lane":3,"detected":true,"count":15,"timestamp":1708023456}'
 ```
 
 ### Monitor Lane Status
 
 ```bash
-mosquitto_sub -h localhost -t lunarlanes/lane/3/status -v
+mosquitto_sub -h localhost -t openlanescheduler/lane/3/status -v
 ```
 
 ## Performance

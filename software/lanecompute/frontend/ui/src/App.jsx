@@ -11,7 +11,7 @@ function DevIndex() {
       minHeight: "100vh", background: T.bg, color: T.text,
       fontFamily: "system-ui,sans-serif", padding: 32,
     }}>
-      <h1 style={{ marginBottom: 4 }}>Lunar Lanes — dev index</h1>
+      <h1 style={{ marginBottom: 4 }}>OpenLane Scheduler — dev index</h1>
       <p style={{ color: T.muted, marginBottom: 24 }}>
         Each lane's monitor and control tablet are separate URLs — this page is a dev-only
         launcher, not part of the real deployment (each device will be pointed straight at

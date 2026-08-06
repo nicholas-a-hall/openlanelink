@@ -25,7 +25,7 @@ class MongoManager {
     try {
       this.client = new MongoClient(this.mongoUrl);
       await this.client.connect();
-      this.db = this.client.db('lunar-lanes');
+      this.db = this.client.db('openlanescheduler');
       this.connected = true;
       console.log('[MongoManager] Connected to MongoDB');
 

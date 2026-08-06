@@ -285,7 +285,7 @@ export default function ControlLane() {
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-          <div style={{ fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: T.muted, fontWeight: 600 }}>Lunar Lanes</div>
+          <div style={{ fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: T.muted, fontWeight: 600 }}>OpenLane Scheduler</div>
           <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: 1, color: T.text }}>Lane {String(laneId).padStart(2, "0")}</div>
         </div>
         <button onClick={() => actions.setPinsetterRunning(!running)} style={{

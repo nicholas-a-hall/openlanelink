@@ -27,7 +27,7 @@ export default function KioskHeader({ lanes = [] }) {
         textShadow: `0 0 5px ${C.kioskCyan}4d`,
         opacity: 0.6,
       }}>
-        LUNAR LANES
+        OPENLANE SCHEDULER
       </div>
       <div style={{
         fontSize: 18,

@@ -1,6 +1,6 @@
 # Mechanics Module Testing Guide (Docker Compose)
 
-This guide provides step-by-step instructions for testing the Lunar Lanes Mechanics Module using Docker Compose.
+This guide provides step-by-step instructions for testing the OpenLane Scheduler Mechanics Module using Docker Compose.
 
 ## Prerequisites
 
@@ -34,10 +34,10 @@ docker-compose ps
 
 # Expected output:
 # NAME                  STATUS    PORTS
-# lunar-lanes-redis     Up        0.0.0.0:6379->6379/tcp
-# lunar-lanes-mongodb   Up        0.0.0.0:27017->27017/tcp
-# lunar-lanes-backend   Up        0.0.0.0:3001->3001/tcp
-# lunar-lanes-frontend  Up        0.0.0.0:8080->80/tcp
+# openlanescheduler-redis     Up        0.0.0.0:6379->6379/tcp
+# openlanescheduler-mongodb   Up        0.0.0.0:27017->27017/tcp
+# openlanescheduler-backend   Up        0.0.0.0:3001->3001/tcp
+# openlanescheduler-frontend  Up        0.0.0.0:8080->80/tcp
 # (... kiosks on 8081-8084)
 ```
 
@@ -650,7 +650,7 @@ docker-compose logs --tail=100 backend
 docker-compose exec mongodb mongosh
 
 # In mongosh:
-use lunar-lanes
+use openlanescheduler
 
 # View collections
 show collections
@@ -679,16 +679,16 @@ docker-compose exec redis redis-cli
 
 # In redis-cli:
 # View all keys
-KEYS lunar-lanes:*
+KEYS openlanescheduler:*
 
 # Get walk-ins
-GET lunar-lanes:walk-ins
+GET openlanescheduler:walk-ins
 
 # Get maintenance flags
-GET lunar-lanes:maintenance
+GET openlanescheduler:maintenance
 
 # Get service calls
-GET lunar-lanes:service-calls
+GET openlanescheduler:service-calls
 
 # Clear all Redis data (DESTRUCTIVE!)
 FLUSHALL
@@ -754,7 +754,7 @@ docker-compose exec backend node src/services/seedComponents.js --force
 
 **Verify in MongoDB:**
 ```bash
-docker-compose exec mongodb mongosh lunar-lanes --eval "db.components.find().pretty()"
+docker-compose exec mongodb mongosh openlanescheduler --eval "db.components.find().pretty()"
 ```
 
 ---
@@ -788,7 +788,7 @@ docker-compose logs backend | grep -i socket
 
 **Check PM config:**
 ```bash
-docker-compose exec mongodb mongosh lunar-lanes --eval "db.pm_config.findOne()"
+docker-compose exec mongodb mongosh openlanescheduler --eval "db.pm_config.findOne()"
 ```
 
 **Expected:**

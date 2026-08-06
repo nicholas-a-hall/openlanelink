@@ -4,13 +4,13 @@ const { createClient } = require('redis');
  * StateManager - Manages application state across Redis and MongoDB
  *
  * Redis (Real-time state):
- * - Walk-ins: lunar-lanes:walk-ins (JSON array, temporary)
- * - Maintenance mode: lunar-lanes:maintenance (JSON object, current flags)
- * - Groups: lunar-lanes:groups (JSON object, current groupings)
- * - Service Calls: lunar-lanes:service-calls (JSON object, active calls)
- * - Reservations by date: lunar-lanes:res:YYYY-MM-DD (JSON array per day)
- * - Metadata: lunar-lanes:meta (counters, etc.)
- * - Excluded events: lunar-lanes:excluded-events (JSON array)
+ * - Walk-ins: openlanescheduler:walk-ins (JSON array, temporary)
+ * - Maintenance mode: openlanescheduler:maintenance (JSON object, current flags)
+ * - Groups: openlanescheduler:groups (JSON object, current groupings)
+ * - Service Calls: openlanescheduler:service-calls (JSON object, active calls)
+ * - Reservations by date: openlanescheduler:res:YYYY-MM-DD (JSON array per day)
+ * - Metadata: openlanescheduler:meta (counters, etc.)
+ * - Excluded events: openlanescheduler:excluded-events (JSON array)
  *
  * MongoDB (Persistent mechanics data - delegated to MongoManager):
  * - service_history: Historical service call logs
@@ -54,12 +54,12 @@ class StateManager {
     if (!this.redis) return;
 
     const keys = [
-      { key: 'lunar-lanes:walk-ins', defaultValue: '[]' },
-      { key: 'lunar-lanes:maintenance', defaultValue: '{}' },
-      { key: 'lunar-lanes:groups', defaultValue: '{}' },
-      { key: 'lunar-lanes:service-calls', defaultValue: '{}' },
-      { key: 'lunar-lanes:excluded-events', defaultValue: '[]' },
-      { key: 'lunar-lanes:meta', defaultValue: '{"nextGroupId":1}' }
+      { key: 'openlanescheduler:walk-ins', defaultValue: '[]' },
+      { key: 'openlanescheduler:maintenance', defaultValue: '{}' },
+      { key: 'openlanescheduler:groups', defaultValue: '{}' },
+      { key: 'openlanescheduler:service-calls', defaultValue: '{}' },
+      { key: 'openlanescheduler:excluded-events', defaultValue: '[]' },
+      { key: 'openlanescheduler:meta', defaultValue: '{"nextGroupId":1}' }
       // Note: components, maintenance-tasks, pm-config now stored in MongoDB
     ];
 
@@ -79,13 +79,13 @@ class StateManager {
 
   async getWalkIns() {
     if (!this.redis) return [];
-    const data = await this.redis.get('lunar-lanes:walk-ins');
+    const data = await this.redis.get('openlanescheduler:walk-ins');
     return data ? JSON.parse(data) : [];
   }
 
   async setWalkIns(walkIns) {
     if (!this.redis) return;
-    await this.redis.set('lunar-lanes:walk-ins', JSON.stringify(walkIns));
+    await this.redis.set('openlanescheduler:walk-ins', JSON.stringify(walkIns));
   }
 
   async addWalkIn(walkIn) {
@@ -122,13 +122,13 @@ class StateManager {
 
   async getMaintenance() {
     if (!this.redis) return {};
-    const data = await this.redis.get('lunar-lanes:maintenance');
+    const data = await this.redis.get('openlanescheduler:maintenance');
     return data ? JSON.parse(data) : {};
   }
 
   async setMaintenance(maintenance) {
     if (!this.redis) return;
-    await this.redis.set('lunar-lanes:maintenance', JSON.stringify(maintenance));
+    await this.redis.set('openlanescheduler:maintenance', JSON.stringify(maintenance));
   }
 
   async toggleMaintenance(lane) {
@@ -153,13 +153,13 @@ class StateManager {
 
   async getGroups() {
     if (!this.redis) return {};
-    const data = await this.redis.get('lunar-lanes:groups');
+    const data = await this.redis.get('openlanescheduler:groups');
     return data ? JSON.parse(data) : {};
   }
 
   async setGroups(groups) {
     if (!this.redis) return;
-    await this.redis.set('lunar-lanes:groups', JSON.stringify(groups));
+    await this.redis.set('openlanescheduler:groups', JSON.stringify(groups));
   }
 
   async addGroup(groupId, lanes) {
@@ -190,13 +190,13 @@ class StateManager {
 
   async getServiceCalls() {
     if (!this.redis) return {};
-    const data = await this.redis.get('lunar-lanes:service-calls');
+    const data = await this.redis.get('openlanescheduler:service-calls');
     return data ? JSON.parse(data) : {};
   }
 
   async setServiceCalls(serviceCalls) {
     if (!this.redis) return;
-    await this.redis.set('lunar-lanes:service-calls', JSON.stringify(serviceCalls));
+    await this.redis.set('openlanescheduler:service-calls', JSON.stringify(serviceCalls));
   }
 
   async addServiceCall(lane, serviceCall) {
@@ -225,7 +225,7 @@ class StateManager {
 
   async getReservationsForDate(date) {
     if (!this.redis) return [];
-    const data = await this.redis.get(`lunar-lanes:res:${date}`);
+    const data = await this.redis.get(`openlanescheduler:res:${date}`);
     return data ? JSON.parse(data) : [];
   }
 
@@ -233,15 +233,15 @@ class StateManager {
     if (!this.redis) return;
     if (reservations.length === 0) {
       // Delete key if no reservations
-      await this.redis.del(`lunar-lanes:res:${date}`);
+      await this.redis.del(`openlanescheduler:res:${date}`);
     } else {
-      await this.redis.set(`lunar-lanes:res:${date}`, JSON.stringify(reservations));
+      await this.redis.set(`openlanescheduler:res:${date}`, JSON.stringify(reservations));
     }
   }
 
   async getAllReservations() {
     if (!this.redis) return [];
-    const keys = await this.redis.keys('lunar-lanes:res:*');
+    const keys = await this.redis.keys('openlanescheduler:res:*');
     const allReservations = [];
 
     for (const key of keys) {
@@ -286,7 +286,7 @@ class StateManager {
     const allReservations = [];
 
     // Get all reservation keys
-    const keys = await this.redis.keys('lunar-lanes:res:*');
+    const keys = await this.redis.keys('openlanescheduler:res:*');
 
     for (const key of keys) {
       const date = key.split(':')[2];
@@ -308,13 +308,13 @@ class StateManager {
 
   async getExcludedEvents() {
     if (!this.redis) return [];
-    const data = await this.redis.get('lunar-lanes:excluded-events');
+    const data = await this.redis.get('openlanescheduler:excluded-events');
     return data ? JSON.parse(data) : [];
   }
 
   async setExcludedEvents(excludedEvents) {
     if (!this.redis) return;
-    await this.redis.set('lunar-lanes:excluded-events', JSON.stringify(excludedEvents));
+    await this.redis.set('openlanescheduler:excluded-events', JSON.stringify(excludedEvents));
   }
 
   async addExcludedEvent(eventId) {
@@ -331,13 +331,13 @@ class StateManager {
 
   async getMeta() {
     if (!this.redis) return { nextGroupId: 1 };
-    const data = await this.redis.get('lunar-lanes:meta');
+    const data = await this.redis.get('openlanescheduler:meta');
     return data ? JSON.parse(data) : { nextGroupId: 1 };
   }
 
   async setMeta(meta) {
     if (!this.redis) return;
-    await this.redis.set('lunar-lanes:meta', JSON.stringify(meta));
+    await this.redis.set('openlanescheduler:meta', JSON.stringify(meta));
   }
 
   async getNextGroupId() {
@@ -519,7 +519,7 @@ class StateManager {
     cutoffDate.setDate(cutoffDate.getDate() - cutoffDays);
     const cutoffStr = cutoffDate.toISOString().split('T')[0];
 
-    const keys = await this.redis.keys('lunar-lanes:res:*');
+    const keys = await this.redis.keys('openlanescheduler:res:*');
     let archivedCount = 0;
 
     for (const key of keys) {
@@ -529,7 +529,7 @@ class StateManager {
         const data = await this.redis.get(key);
         if (data) {
           const month = date.substring(0, 7); // YYYY-MM
-          const archiveKey = `lunar-lanes:archive:${month}`;
+          const archiveKey = `openlanescheduler:archive:${month}`;
 
           // Append to archive (or create new)
           const existing = await this.redis.get(archiveKey);
@@ -553,7 +553,7 @@ class StateManager {
    */
   async getArchivedReservations(month) {
     if (!this.redis) return [];
-    const data = await this.redis.get(`lunar-lanes:archive:${month}`);
+    const data = await this.redis.get(`openlanescheduler:archive:${month}`);
     return data ? JSON.parse(data) : [];
   }
 

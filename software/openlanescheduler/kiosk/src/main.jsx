@@ -1,12 +1,12 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { ThemeProvider } from './theme'
-import LunarLanesKiosk from './LunarLanesKiosk'
+import OpenLaneSchedulerKiosk from './OpenLaneSchedulerKiosk'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ThemeProvider>
-      <LunarLanesKiosk />
+      <OpenLaneSchedulerKiosk />
     </ThemeProvider>
   </React.StrictMode>
 )

@@ -1,7 +1,7 @@
 """Staff/maintenance assistance requests.
 
 Deliberately isolated from game_state.py -- this is not game data, it's a
-summon-a-human signal. Wired to openlanescheduler ("Lunar Lanes"), the
+summon-a-human signal. Wired to openlanescheduler ("OpenLane Scheduler"), the
 venue's existing scheduling/lane-status system -- a separate project
 (dev/GitHub/openlanescheduler), not part of openlanelink. See
 ../DEVELOPING.md for how the two systems relate: two separate systems,
@@ -102,7 +102,7 @@ def _notify_dashboard(req: AssistanceRequest) -> None:
             req.lane_number,
         )
         return
-    topic = f"lunarlanes/lane/{req.lane_number}/service_call"
+    topic = f"openlanescheduler/lane/{req.lane_number}/service_call"
     payload = json.dumps({
         "lane": req.lane_number,
         "timestamp": req.requested_at_ms // 1000,  # openlanescheduler's documented format uses Unix seconds

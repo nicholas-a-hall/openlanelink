@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "lunar-lanes.backend.fullname" . }}
+  name: {{ include "openlanescheduler.backend.fullname" . }}
   labels:
-    {{- include "lunar-lanes.labels" . | nindent 4 }}
+    {{- include "openlanescheduler.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
   type: {{ .Values.backend.service.type }}
@@ -13,21 +13,21 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "lunar-lanes.selectorLabels" . | nindent 4 }}
+    {{- include "openlanescheduler.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "lunar-lanes.backend.fullname" . }}
+  name: {{ include "openlanescheduler.backend.fullname" . }}
   labels:
-    {{- include "lunar-lanes.labels" . | nindent 4 }}
+    {{- include "openlanescheduler.labels" . | nindent 4 }}
     app.kubernetes.io/component: backend
 spec:
   replicas: {{ .Values.backend.replicaCount }}
   selector:
     matchLabels:
-      {{- include "lunar-lanes.selectorLabels" . | nindent 6 }}
+      {{- include "openlanescheduler.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: backend
   template:
     metadata:
@@ -35,10 +35,10 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
       labels:
-        {{- include "lunar-lanes.selectorLabels" . | nindent 8 }}
+        {{- include "openlanescheduler.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: backend
     spec:
-      serviceAccountName: {{ include "lunar-lanes.serviceAccountName" . }}
+      serviceAccountName: {{ include "openlanescheduler.serviceAccountName" . }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -60,9 +60,9 @@ spec:
               value: {{ .Values.backend.env.port | quote }}
           envFrom:
             - configMapRef:
-                name: {{ include "lunar-lanes.fullname" . }}-config
+                name: {{ include "openlanescheduler.fullname" . }}-config
             - secretRef:
-                name: {{ include "lunar-lanes.fullname" . }}-secrets
+                name: {{ include "openlanescheduler.fullname" . }}-secrets
           {{- with .Values.backend.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

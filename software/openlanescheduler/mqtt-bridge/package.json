@@ -1,7 +1,7 @@
 {
-  "name": "lunar-lanes-mqtt-bridge",
+  "name": "openlanescheduler-mqtt-bridge",
   "version": "1.0.0",
-  "description": "MQTT to Socket.IO bridge for Lunar Lanes hardware integration",
+  "description": "MQTT to Socket.IO bridge for OpenLane Scheduler hardware integration",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

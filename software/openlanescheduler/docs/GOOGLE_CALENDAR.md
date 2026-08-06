@@ -1,6 +1,6 @@
 # Google Calendar Integration
 
-Lunar Lanes can sync reservations from Google Calendar. Events on your calendar automatically appear as lane reservations on the status board.
+OpenLane Scheduler can sync reservations from Google Calendar. Events on your calendar automatically appear as lane reservations on the status board.
 
 ## Setup (Google Workspace)
 
@@ -12,7 +12,7 @@ You'll need to create a free Google Cloud project to get an API key. This uses y
 2. You'll be prompted to agree to the Terms of Service — check the box and click **Agree and Continue**
 3. Click the project dropdown at the top left of the page (it may say "Select a project")
 4. Click **New Project**
-5. Name it something like `Lunar Lanes` and click **Create**
+5. Name it something like `OpenLane Scheduler` and click **Create**
 6. Make sure your new project is selected in the dropdown
 
 > **Note:** If you see an error that project creation is restricted, your Workspace admin needs to allow it. Ask them to enable project creation for your account, or have them create the project for you.
@@ -57,7 +57,7 @@ The API key method reads the calendar as a public resource, so it needs to be sh
 5. Scroll down to **Integrate calendar**
 6. Copy the **Calendar ID** — it will look like `your-org.com_abc123@group.calendar.google.com`
 
-### Step 6: Configure Lunar Lanes
+### Step 6: Configure OpenLane Scheduler
 
 Edit `docker-compose.yml` and uncomment/fill in the calendar environment variables:
 
@@ -90,7 +90,7 @@ You should see `GCal sync enabled (every 120s)` with no errors.
 
 ### Event Title Format
 
-For single-calendar mode, the event title tells Lunar Lanes which lane the reservation is for:
+For single-calendar mode, the event title tells OpenLane Scheduler which lane the reservation is for:
 
 ```
 Lane 3 - Smith Party
@@ -121,7 +121,7 @@ paid: false
 | `games` | `2` | Number of games for per-game reservations |
 | `paid` | `false` | Whether the reservation is pre-paid |
 
-If you leave the description blank, Lunar Lanes will default to 4 guests, hourly type, and infer the duration from the event start/end times. That's usually all you need.
+If you leave the description blank, OpenLane Scheduler will default to 4 guests, hourly type, and infer the duration from the event start/end times. That's usually all you need.
 
 ## Keeping 8 Lanes Organized on One Calendar
 
@@ -169,7 +169,7 @@ Each calendar maps to a lane in order. Event titles are just the party name — 
 
 ## Syncing
 
-Lunar Lanes polls the calendar every 2 minutes by default (configurable via `GCAL_SYNC_INTERVAL`).
+OpenLane Scheduler polls the calendar every 2 minutes by default (configurable via `GCAL_SYNC_INTERVAL`).
 
 To force an immediate sync after making calendar changes:
 

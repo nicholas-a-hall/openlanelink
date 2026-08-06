@@ -1,8 +1,8 @@
-# Lunar Lanes - Project Guide for Claude
+# OpenLane Scheduler - Project Guide for Claude
 
 ## Project Overview
 
-**Lunar Lanes** is a real-time bowling alley management system with three main components:
+**OpenLane Scheduler** is a real-time bowling alley management system with three main components:
 - **Manager Dashboard** - Full control panel for staff to manage lanes, reservations, and operations
 - **Lane Kiosks** - Per-lane displays showing status and allowing service calls
 - **Backend** - Node.js server handling state management, WebSocket sync, and Google Calendar integration
@@ -866,7 +866,7 @@ Backend creates one GCal event per lane, all with same party details.
 
 ### State Persistence
 
-- State persists in Redis at key `lunar-lanes:state`
+- State persists in Redis at key `openlanescheduler:state`
 - Saved after every action via `persistState()`
 - Restored on server startup
 - GCal sync runs every 120s and merges with local state
@@ -1030,4 +1030,4 @@ When asking Claude for help:
 ---
 
 **Last Updated:** 2026-02-14
-**Maintained by:** Lunar Lanes Development Team
+**Maintained by:** OpenLane Scheduler Development Team

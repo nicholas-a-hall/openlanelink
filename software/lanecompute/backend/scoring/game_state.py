@@ -5,7 +5,7 @@ overhead display and the control tablet are thin clients fed by the
 REST/WebSocket API layer (api.py), which reads and mutates state through
 this module. Nothing else computes scores. This is also the first *real*
 implementation of 10-pin scoring math in this project -- the UI prototypes
-(scoredash's generateFrames, lunar-lanes-scoring's scoreGame/applyBall) each
+(scoredash's generateFrames, openlanescheduler-scoring's scoreGame/applyBall) each
 had their own, and were flagged as needing consolidation into one shared
 module; this is that module. Once the UI is wired to this API it should stop
 computing scores itself and just render what it's given.

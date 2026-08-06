@@ -1,8 +1,8 @@
 {
-  "name": "lunar-lanes-kiosk",
+  "name": "openlanescheduler-kiosk",
   "version": "0.1.0",
   "private": true,
-  "description": "Lunar Lanes customer service tablet kiosk with retro-futurism UI",
+  "description": "OpenLane Scheduler customer service tablet kiosk with retro-futurism UI",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

@@ -21,7 +21,7 @@ return `rgba(var(--ll-blue-rgb), ${0.15 + intensity * 0.5})`;
 
 **Fix:** `background: C.overlayBg` — the palette key already exists in both dark and light themes but isn't used here.
 
-### Kiosk — LunarLanesKiosk.jsx CSS `<style>` tags
+### Kiosk — OpenLaneSchedulerKiosk.jsx CSS `<style>` tags
 
 Hardcoded values in CSS blocks that bypass the theme:
 - `color: #555` for disabled button states → use `var(--ll-dim)`
@@ -110,4 +110,4 @@ Currently `localStorage` stores `'dark'` or `'light'`. To support custom themes:
 | `frontend/src/shared.js` | Remove dead `C` export |
 | `kiosk/src/shared.js` | Remove dead `C` export |
 | `frontend/src/App.jsx` | Fix hardcoded `rgba(0,180,255,...)` and `rgba(0,0,0,0.7)` |
-| `kiosk/src/LunarLanesKiosk.jsx` | Fix hardcoded `#555`, `rgba(0,0,0,0.9)`, `rgba(255,255,255,...)` in CSS |
+| `kiosk/src/OpenLaneSchedulerKiosk.jsx` | Fix hardcoded `#555`, `rgba(0,0,0,0.9)`, `rgba(255,255,255,...)` in CSS |

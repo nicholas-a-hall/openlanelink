@@ -14,7 +14,7 @@ We release patches for security vulnerabilities for the following versions:
 **Please do not report security vulnerabilities through public GitHub issues.**
 
 Instead, please report security vulnerabilities by emailing:
-**security@lunarlanes.local** (replace with your actual security contact email)
+**security@openlanescheduler.local** (replace with your actual security contact email)
 
 You should receive a response within 48 hours. If for some reason you do not, please follow up via email to ensure we received your original message.
 
@@ -183,4 +183,4 @@ We recognize security researchers who responsibly disclose vulnerabilities:
 
 ---
 
-**Thank you for helping keep Lunar Lanes secure!**
+**Thank you for helping keep OpenLane Scheduler secure!**

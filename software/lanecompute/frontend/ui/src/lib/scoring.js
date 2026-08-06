@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════
    SHARED 10-PIN SCORING ENGINE
    Single source of truth for both the display and control screens —
-   ported from lunar-lanes-scoring.jsx. Frames store raw per-ball pin
+   ported from openlanescheduler-scoring.jsx. Frames store raw per-ball pin
    counts; running totals and glyphs are always DERIVED, never stored,
    so auto-fed results (later: real pinsetter events over the compute
    node's WebSocket) and manual tablet corrections flow through the

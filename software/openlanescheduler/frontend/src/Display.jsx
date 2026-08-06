@@ -353,7 +353,7 @@ export default function Display() {
   if (!S) {
     return (
       <div style={{ minHeight:'100vh', backgroundColor: C.bg, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16 }}>
-        <div style={{ fontFamily: F.head, fontSize:'1.5rem', fontWeight:700, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>LUNAR LANES</div>
+        <div style={{ fontFamily: F.head, fontSize:'1.5rem', fontWeight:700, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>OPENLANE SCHEDULER</div>
         <div style={{ fontFamily: F.mono, fontSize:'0.8rem', color: C.text }}>
           {connected ? 'Loading...' : 'Connecting...'}
         </div>
@@ -368,7 +368,7 @@ export default function Display() {
       <div style={{ maxWidth:1400, margin:'0 auto', width:'100%', display:'flex', flexDirection:'column', flex:1, minHeight:0 }}>
         {/* Header */}
         <div style={{ display:'flex', flexDirection: compact ? 'column' : 'row', justifyContent:'space-between', alignItems: compact ? 'stretch' : 'center', gap: compact ? 10 : 0, marginBottom:12, paddingBottom:10, flexShrink:0 }}>
-          <h1 key={isDark ? 'd' : 'l'} style={{ fontFamily: F.head, fontSize: compact ? '1.1rem' : '1.3rem', fontWeight:700, letterSpacing:'0.2em', margin:0, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>LUNAR LANES</h1>
+          <h1 key={isDark ? 'd' : 'l'} style={{ fontFamily: F.head, fontSize: compact ? '1.1rem' : '1.3rem', fontWeight:700, letterSpacing:'0.2em', margin:0, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>OPENLANE SCHEDULER</h1>
           <div style={{ display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
             {!EMBEDDED && <button onClick={() => { if (muted) { const ctx = getCtx(); if (ctx.state === 'suspended') ctx.resume(); } setMuted(m => !m); }} title={muted ? 'Unmute ball call alerts' : 'Mute ball call alerts'} style={{
               ...(muted ? raised(C, { radius: 8, distance: 3 }) : inset(C, { radius: 8, distance: 2, accent: C.amber })), cursor:'pointer',

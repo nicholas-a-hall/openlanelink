@@ -1,6 +1,6 @@
 # Kubernetes Deployment Guide
 
-This guide walks through deploying Lunar Lanes to a Kubernetes cluster using Helm.
+This guide walks through deploying OpenLane Scheduler to a Kubernetes cluster using Helm.
 
 ---
 
@@ -31,14 +31,14 @@ This guide walks through deploying Lunar Lanes to a Kubernetes cluster using Hel
 cd backend
 
 # Build image
-docker build -t YOUR_REGISTRY/lunar-lanes/backend:latest .
+docker build -t YOUR_REGISTRY/openlanescheduler/backend:latest .
 
 # Tag with version
-docker tag YOUR_REGISTRY/lunar-lanes/backend:latest YOUR_REGISTRY/lunar-lanes/backend:v1.0.0
+docker tag YOUR_REGISTRY/openlanescheduler/backend:latest YOUR_REGISTRY/openlanescheduler/backend:v1.0.0
 
 # Push to registry
-docker push YOUR_REGISTRY/lunar-lanes/backend:latest
-docker push YOUR_REGISTRY/lunar-lanes/backend:v1.0.0
+docker push YOUR_REGISTRY/openlanescheduler/backend:latest
+docker push YOUR_REGISTRY/openlanescheduler/backend:v1.0.0
 ```
 
 ### Frontend Image
@@ -94,10 +94,10 @@ server {
 EOF
 
 # Build and push
-docker build -t YOUR_REGISTRY/lunar-lanes/frontend:latest .
-docker tag YOUR_REGISTRY/lunar-lanes/frontend:latest YOUR_REGISTRY/lunar-lanes/frontend:v1.0.0
-docker push YOUR_REGISTRY/lunar-lanes/frontend:latest
-docker push YOUR_REGISTRY/lunar-lanes/frontend:v1.0.0
+docker build -t YOUR_REGISTRY/openlanescheduler/frontend:latest .
+docker tag YOUR_REGISTRY/openlanescheduler/frontend:latest YOUR_REGISTRY/openlanescheduler/frontend:v1.0.0
+docker push YOUR_REGISTRY/openlanescheduler/frontend:latest
+docker push YOUR_REGISTRY/openlanescheduler/frontend:v1.0.0
 ```
 
 ### Kiosk Image
@@ -122,10 +122,10 @@ EOF
 # ... (copy from above)
 
 # Build and push
-docker build -t YOUR_REGISTRY/lunar-lanes/kiosk:latest .
-docker tag YOUR_REGISTRY/lunar-lanes/kiosk:latest YOUR_REGISTRY/lunar-lanes/kiosk:v1.0.0
-docker push YOUR_REGISTRY/lunar-lanes/kiosk:latest
-docker push YOUR_REGISTRY/lunar-lanes/kiosk:v1.0.0
+docker build -t YOUR_REGISTRY/openlanescheduler/kiosk:latest .
+docker tag YOUR_REGISTRY/openlanescheduler/kiosk:latest YOUR_REGISTRY/openlanescheduler/kiosk:v1.0.0
+docker push YOUR_REGISTRY/openlanescheduler/kiosk:latest
+docker push YOUR_REGISTRY/openlanescheduler/kiosk:v1.0.0
 ```
 
 ---
@@ -135,8 +135,8 @@ docker push YOUR_REGISTRY/lunar-lanes/kiosk:v1.0.0
 ### Create Namespace
 
 ```bash
-kubectl create namespace lunar-lanes
-kubectl config set-context --current --namespace=lunar-lanes
+kubectl create namespace openlanescheduler
+kubectl config set-context --current --namespace=openlanescheduler
 ```
 
 ### Install Ingress Controller (if not already installed)
@@ -203,7 +203,7 @@ global:
 # Backend configuration
 backend:
   image:
-    repository: YOUR_REGISTRY/lunar-lanes/backend
+    repository: YOUR_REGISTRY/openlanescheduler/backend
     tag: v1.0.0
     pullPolicy: Always
 
@@ -235,7 +235,7 @@ backend:
 # Frontend configuration
 frontend:
   image:
-    repository: YOUR_REGISTRY/lunar-lanes/frontend
+    repository: YOUR_REGISTRY/openlanescheduler/frontend
     tag: v1.0.0
     pullPolicy: Always
 
@@ -251,7 +251,7 @@ frontend:
 kiosk:
   enabled: true
   image:
-    repository: YOUR_REGISTRY/lunar-lanes/kiosk
+    repository: YOUR_REGISTRY/openlanescheduler/kiosk
     tag: v1.0.0
     pullPolicy: Always
 
@@ -291,7 +291,7 @@ ingress:
   className: nginx
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/websocket-services: "lunar-lanes-backend"
+    nginx.ingress.kubernetes.io/websocket-services: "openlanescheduler-backend"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
 
@@ -328,7 +328,7 @@ ingress:
           port: 80
 
   tls:
-    - secretName: lunar-lanes-tls
+    - secretName: openlanescheduler-tls
       hosts:
         - bowling.example.com
 
@@ -354,41 +354,41 @@ EOF
 
 ```bash
 # From local chart directory
-helm install lunar-lanes ./helm/lunar-lanes \
+helm install openlanescheduler ./helm/openlanescheduler \
   -f production-values.yaml \
-  --namespace lunar-lanes
+  --namespace openlanescheduler
 
 # Or if chart is published
-helm repo add lunar-lanes https://your-chart-repo.example.com
-helm install lunar-lanes lunar-lanes/lunar-lanes \
+helm repo add openlanescheduler https://your-chart-repo.example.com
+helm install openlanescheduler openlanescheduler/openlanescheduler \
   -f production-values.yaml \
-  --namespace lunar-lanes
+  --namespace openlanescheduler
 ```
 
 ### Verify Deployment
 
 ```bash
 # Check all pods are running
-kubectl get pods -n lunar-lanes
+kubectl get pods -n openlanescheduler
 
 # Expected output:
 # NAME                                        READY   STATUS    RESTARTS   AGE
-# lunar-lanes-backend-xxx                     1/1     Running   0          2m
-# lunar-lanes-frontend-xxx                    1/1     Running   0          2m
-# lunar-lanes-kiosk-lanes-1-2-xxx             1/1     Running   0          2m
-# lunar-lanes-kiosk-lanes-3-4-xxx             1/1     Running   0          2m
-# lunar-lanes-kiosk-lanes-5-6-xxx             1/1     Running   0          2m
-# lunar-lanes-kiosk-lanes-7-8-xxx             1/1     Running   0          2m
-# lunar-lanes-redis-0                         1/1     Running   0          2m
+# openlanescheduler-backend-xxx                     1/1     Running   0          2m
+# openlanescheduler-frontend-xxx                    1/1     Running   0          2m
+# openlanescheduler-kiosk-lanes-1-2-xxx             1/1     Running   0          2m
+# openlanescheduler-kiosk-lanes-3-4-xxx             1/1     Running   0          2m
+# openlanescheduler-kiosk-lanes-5-6-xxx             1/1     Running   0          2m
+# openlanescheduler-kiosk-lanes-7-8-xxx             1/1     Running   0          2m
+# openlanescheduler-redis-0                         1/1     Running   0          2m
 
 # Check services
-kubectl get svc -n lunar-lanes
+kubectl get svc -n openlanescheduler
 
 # Check ingress
-kubectl get ingress -n lunar-lanes
+kubectl get ingress -n openlanescheduler
 
 # View logs
-kubectl logs -l app.kubernetes.io/component=backend -n lunar-lanes -f
+kubectl logs -l app.kubernetes.io/component=backend -n openlanescheduler -f
 ```
 
 ---
@@ -510,11 +510,11 @@ autoscaling:
 
 ```bash
 # Build new images with new tag
-docker build -t YOUR_REGISTRY/lunar-lanes/backend:v1.1.0 .
-docker push YOUR_REGISTRY/lunar-lanes/backend:v1.1.0
+docker build -t YOUR_REGISTRY/openlanescheduler/backend:v1.1.0 .
+docker push YOUR_REGISTRY/openlanescheduler/backend:v1.1.0
 
 # Upgrade Helm release
-helm upgrade lunar-lanes ./helm/lunar-lanes \
+helm upgrade openlanescheduler ./helm/openlanescheduler \
   --set backend.image.tag=v1.1.0 \
   -f production-values.yaml
 ```
@@ -523,49 +523,49 @@ helm upgrade lunar-lanes ./helm/lunar-lanes \
 
 ```bash
 # Via Helm
-helm upgrade lunar-lanes ./helm/lunar-lanes \
+helm upgrade openlanescheduler ./helm/openlanescheduler \
   --set backend.replicaCount=5 \
   -f production-values.yaml
 
 # Or directly with kubectl
-kubectl scale deployment lunar-lanes-backend --replicas=5 -n lunar-lanes
+kubectl scale deployment openlanescheduler-backend --replicas=5 -n openlanescheduler
 ```
 
 ### Backup Redis Data
 
 ```bash
 # Create backup
-kubectl exec -n lunar-lanes lunar-lanes-redis-0 -- redis-cli SAVE
+kubectl exec -n openlanescheduler openlanescheduler-redis-0 -- redis-cli SAVE
 
 # Copy backup file
-kubectl cp lunar-lanes/lunar-lanes-redis-0:/data/dump.rdb ./backup-$(date +%Y%m%d).rdb
+kubectl cp openlanescheduler/openlanescheduler-redis-0:/data/dump.rdb ./backup-$(date +%Y%m%d).rdb
 
 # Restore from backup
-kubectl cp ./backup-20260215.rdb lunar-lanes/lunar-lanes-redis-0:/data/dump.rdb
-kubectl delete pod lunar-lanes-redis-0 -n lunar-lanes  # Will restart with new data
+kubectl cp ./backup-20260215.rdb openlanescheduler/openlanescheduler-redis-0:/data/dump.rdb
+kubectl delete pod openlanescheduler-redis-0 -n openlanescheduler  # Will restart with new data
 ```
 
 ### View Logs
 
 ```bash
 # All backend logs
-kubectl logs -l app.kubernetes.io/component=backend -n lunar-lanes --tail=100 -f
+kubectl logs -l app.kubernetes.io/component=backend -n openlanescheduler --tail=100 -f
 
 # Specific pod
-kubectl logs lunar-lanes-backend-xxx -n lunar-lanes -f
+kubectl logs openlanescheduler-backend-xxx -n openlanescheduler -f
 
 # Previous pod instance (if crashed)
-kubectl logs lunar-lanes-backend-xxx -n lunar-lanes -p
+kubectl logs openlanescheduler-backend-xxx -n openlanescheduler -p
 ```
 
 ### Restart Services
 
 ```bash
 # Restart backend
-kubectl rollout restart deployment lunar-lanes-backend -n lunar-lanes
+kubectl rollout restart deployment openlanescheduler-backend -n openlanescheduler
 
 # Restart all deployments
-kubectl rollout restart deployment -n lunar-lanes
+kubectl rollout restart deployment -n openlanescheduler
 ```
 
 ---
@@ -576,7 +576,7 @@ kubectl rollout restart deployment -n lunar-lanes
 
 ```bash
 # Describe pod
-kubectl describe pod <pod-name> -n lunar-lanes
+kubectl describe pod <pod-name> -n openlanescheduler
 
 # Common issues:
 # - Image pull errors: Check registry credentials
@@ -584,15 +584,15 @@ kubectl describe pod <pod-name> -n lunar-lanes
 # - Storage issues: Check PVC status
 
 # Check PVC
-kubectl get pvc -n lunar-lanes
-kubectl describe pvc data-lunar-lanes-redis-0 -n lunar-lanes
+kubectl get pvc -n openlanescheduler
+kubectl describe pvc data-openlanescheduler-redis-0 -n openlanescheduler
 ```
 
 ### Backend Can't Connect to Redis
 
 ```bash
 # Test Redis connectivity
-kubectl exec -n lunar-lanes <backend-pod> -- redis-cli -h lunar-lanes-redis ping
+kubectl exec -n openlanescheduler <backend-pod> -- redis-cli -h openlanescheduler-redis ping
 
 # Should return: PONG
 ```
@@ -601,7 +601,7 @@ kubectl exec -n lunar-lanes <backend-pod> -- redis-cli -h lunar-lanes-redis ping
 
 ```bash
 # Check ingress status
-kubectl describe ingress lunar-lanes -n lunar-lanes
+kubectl describe ingress openlanescheduler -n openlanescheduler
 
 # Check ingress controller logs
 kubectl logs -n ingress-nginx -l app.kubernetes.io/component=controller -f
@@ -610,21 +610,21 @@ kubectl logs -n ingress-nginx -l app.kubernetes.io/component=controller -f
 nslookup bowling.example.com
 
 # Test without ingress
-kubectl port-forward svc/lunar-lanes-frontend 8080:80 -n lunar-lanes
+kubectl port-forward svc/openlanescheduler-frontend 8080:80 -n openlanescheduler
 ```
 
 ### Certificate Issues
 
 ```bash
 # Check cert-manager status
-kubectl get certificate -n lunar-lanes
-kubectl describe certificate lunar-lanes-tls -n lunar-lanes
+kubectl get certificate -n openlanescheduler
+kubectl describe certificate openlanescheduler-tls -n openlanescheduler
 
 # Check certificate request
-kubectl get certificaterequest -n lunar-lanes
+kubectl get certificaterequest -n openlanescheduler
 
 # Force renewal
-kubectl delete certificate lunar-lanes-tls -n lunar-lanes
+kubectl delete certificate openlanescheduler-tls -n openlanescheduler
 # Will auto-recreate
 ```
 
@@ -647,7 +647,7 @@ backend:
 
 ### Grafana Dashboards
 
-Import dashboard JSON for Lunar Lanes metrics (create custom dashboard monitoring reservation counts, lane status, etc.)
+Import dashboard JSON for OpenLane Scheduler metrics (create custom dashboard monitoring reservation counts, lane status, etc.)
 
 ### Health Checks
 
@@ -656,7 +656,7 @@ Import dashboard JSON for Lunar Lanes metrics (create custom dashboard monitorin
 curl https://bowling.example.com/api/health
 
 # Or from within cluster
-kubectl exec -it <any-pod> -- curl http://lunar-lanes-backend:3001/health
+kubectl exec -it <any-pod> -- curl http://openlanescheduler-backend:3001/health
 ```
 
 ---
@@ -667,7 +667,7 @@ kubectl exec -it <any-pod> -- curl http://lunar-lanes-backend:3001/health
    ```bash
    kubectl create secret generic gcal-creds \
      --from-file=service-account.json \
-     -n lunar-lanes
+     -n openlanescheduler
    ```
 
 2. **Network Policies** (restrict pod-to-pod communication)
@@ -682,13 +682,13 @@ kubectl exec -it <any-pod> -- curl http://lunar-lanes-backend:3001/health
 
 ```bash
 # Uninstall Helm release
-helm uninstall lunar-lanes -n lunar-lanes
+helm uninstall openlanescheduler -n openlanescheduler
 
 # Delete PVCs (if not auto-deleted)
-kubectl delete pvc -l app.kubernetes.io/instance=lunar-lanes -n lunar-lanes
+kubectl delete pvc -l app.kubernetes.io/instance=openlanescheduler -n openlanescheduler
 
 # Delete namespace
-kubectl delete namespace lunar-lanes
+kubectl delete namespace openlanescheduler
 ```
 
 ---

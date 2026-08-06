@@ -45,7 +45,7 @@ function AnimExpand({ open, children }) {
 }
 
 // ── Main ────────────────────────────────────────────────
-export default function LunarLanesDisplay() {
+export default function OpenLaneSchedulerDisplay() {
   const { connected, state: S, dispatch, lastError, lastReservation, clearError, clearReservation } = useSocket();
   const compact = useCompact();
   const C = useColors();
@@ -1226,7 +1226,7 @@ export default function LunarLanesDisplay() {
   if (!S) {
     return (
       <div style={{ minHeight:'100vh', backgroundColor: C.bg, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:16 }}>
-        <div style={{ fontFamily: F.head, fontSize:'1.5rem', fontWeight:700, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>LUNAR LANES</div>
+        <div style={{ fontFamily: F.head, fontSize:'1.5rem', fontWeight:700, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>OPENLANE SCHEDULER</div>
         <div style={{ fontFamily: F.mono, fontSize:'0.8rem', color: C.text }}>
           {connected ? 'Loading state...' : 'Connecting to server...'}
         </div>
@@ -1242,7 +1242,7 @@ export default function LunarLanesDisplay() {
         {/* Header */}
         <div style={{ display:'flex', flexDirection: compact ? 'column' : 'row', justifyContent:'space-between', alignItems: compact ? 'stretch' : 'center', gap: compact ? 10 : 0, marginBottom:22, paddingBottom:18 }}>
           <div>
-            <h1 key={isDark ? 'd' : 'l'} style={{ fontFamily: F.head, fontSize: compact ? '1.1rem' : '1.5rem', fontWeight:700, letterSpacing:'0.2em', margin:0, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>LUNAR LANES</h1>
+            <h1 key={isDark ? 'd' : 'l'} style={{ fontFamily: F.head, fontSize: compact ? '1.1rem' : '1.5rem', fontWeight:700, letterSpacing:'0.2em', margin:0, background: `linear-gradient(135deg, ${C.blue}, ${C.pink})`, backgroundClip:'text', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent', color:'transparent' }}>OPENLANE SCHEDULER</h1>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:14, flexWrap:'wrap' }}>
             {/* Connection indicator */}

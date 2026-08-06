@@ -1,8 +1,8 @@
-# Developer's Guide - Lunar Lanes
+# Developer's Guide - OpenLane Scheduler
 
 ## System Overview
 
-Lunar Lanes is a real-time bowling alley management system built as a **Single Page Application (SPA)** with three distinct components working together through WebSocket-based state synchronization.
+OpenLane Scheduler is a real-time bowling alley management system built as a **Single Page Application (SPA)** with three distinct components working together through WebSocket-based state synchronization.
 
 ### Core Architecture
 

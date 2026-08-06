@@ -1,4 +1,4 @@
-# Lunar Lanes User Manual
+# OpenLane Scheduler User Manual
 **For Counter Staff**
 
 ---

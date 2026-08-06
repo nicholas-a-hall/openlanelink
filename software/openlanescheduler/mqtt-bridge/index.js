@@ -26,13 +26,13 @@ let laneStates = {};  // Cache of current lane states for MQTT publish
 log.info('Connecting to MQTT broker:', MQTT_BROKER_URL);
 
 const mqttClient = mqtt.connect(MQTT_BROKER_URL, {
-  clientId: `lunarlanes-bridge-${Date.now()}`,
+  clientId: `openlanescheduler-bridge-${Date.now()}`,
   clean: true,
   reconnectPeriod: 1000,
   keepalive: 60,
   connectTimeout: 30 * 1000,
   will: {
-    topic: 'lunarlanes/bridge/status',
+    topic: 'openlanescheduler/bridge/status',
     payload: JSON.stringify({ online: false, timestamp: Date.now() }),
     qos: 1,
     retain: true
@@ -47,7 +47,7 @@ mqttClient.on('connect', () => {
 
   // Publish bridge online status
   mqttClient.publish(
-    'lunarlanes/bridge/status',
+    'openlanescheduler/bridge/status',
     JSON.stringify({ online: true, timestamp: Date.now() }),
     { qos: 1, retain: true }
   );
@@ -116,38 +116,38 @@ socket.on('stateUpdate', (update) => {
 // ── MQTT Subscription ────────────────────────────────────
 function subscribeToHardwareTopics() {
   // Subscribe to service calls from all lanes
-  mqttClient.subscribe('lunarlanes/lane/+/service_call', { qos: 1 }, (err) => {
+  mqttClient.subscribe('openlanescheduler/lane/+/service_call', { qos: 1 }, (err) => {
     if (err) {
       log.error('Failed to subscribe to service_call:', err);
     } else {
-      log.info('✓ Subscribed to lunarlanes/lane/+/service_call');
+      log.info('✓ Subscribed to openlanescheduler/lane/+/service_call');
     }
   });
 
   // Subscribe to sensors (ball return, pin reset, etc.)
-  mqttClient.subscribe('lunarlanes/lane/+/sensor/#', { qos: 0 }, (err) => {
+  mqttClient.subscribe('openlanescheduler/lane/+/sensor/#', { qos: 0 }, (err) => {
     if (err) {
       log.error('Failed to subscribe to sensors:', err);
     } else {
-      log.info('✓ Subscribed to lunarlanes/lane/+/sensor/#');
+      log.info('✓ Subscribed to openlanescheduler/lane/+/sensor/#');
     }
   });
 
   // Subscribe to device online/offline status
-  mqttClient.subscribe('lunarlanes/device/+/online', { qos: 1 }, (err) => {
+  mqttClient.subscribe('openlanescheduler/device/+/online', { qos: 1 }, (err) => {
     if (err) {
       log.error('Failed to subscribe to device status:', err);
     } else {
-      log.info('✓ Subscribed to lunarlanes/device/+/online');
+      log.info('✓ Subscribed to openlanescheduler/device/+/online');
     }
   });
 
   // Subscribe to device heartbeats
-  mqttClient.subscribe('lunarlanes/device/+/heartbeat', { qos: 0 }, (err) => {
+  mqttClient.subscribe('openlanescheduler/device/+/heartbeat', { qos: 0 }, (err) => {
     if (err) {
       log.error('Failed to subscribe to heartbeats:', err);
     } else {
-      log.info('✓ Subscribed to lunarlanes/device/+/heartbeat');
+      log.info('✓ Subscribed to openlanescheduler/device/+/heartbeat');
     }
   });
 }
@@ -161,38 +161,38 @@ function handleMQTTMessage(topic, message) {
 
     log.info(`[MQTT → Bridge] ${topic}: ${payloadPreview}${payloadPreview.length >= 100 ? '...' : ''}`);
 
-    // Service call: lunarlanes/lane/{1-8}/service_call
-    if (parts[0] === 'lunarlanes' && parts[1] === 'lane' && parts[3] === 'service_call') {
+    // Service call: openlanescheduler/lane/{1-8}/service_call
+    if (parts[0] === 'openlanescheduler' && parts[1] === 'lane' && parts[3] === 'service_call') {
       const lane = parseInt(parts[2]);
       handleServiceCall(lane, payload);
     }
 
-    // Ball return sensor: lunarlanes/lane/{1-8}/sensor/ball_return
-    else if (parts[0] === 'lunarlanes' && parts[1] === 'lane' && parts[3] === 'sensor' && parts[4] === 'ball_return') {
+    // Ball return sensor: openlanescheduler/lane/{1-8}/sensor/ball_return
+    else if (parts[0] === 'openlanescheduler' && parts[1] === 'lane' && parts[3] === 'sensor' && parts[4] === 'ball_return') {
       const lane = parseInt(parts[2]);
       handleBallReturnSensor(lane, payload);
     }
 
-    // Pin reset sensor: lunarlanes/lane/{1-8}/sensor/pin_reset
-    else if (parts[0] === 'lunarlanes' && parts[1] === 'lane' && parts[3] === 'sensor' && parts[4] === 'pin_reset') {
+    // Pin reset sensor: openlanescheduler/lane/{1-8}/sensor/pin_reset
+    else if (parts[0] === 'openlanescheduler' && parts[1] === 'lane' && parts[3] === 'sensor' && parts[4] === 'pin_reset') {
       const lane = parseInt(parts[2]);
       handlePinResetSensor(lane, payload);
     }
 
-    // Game complete sensor: lunarlanes/lane/{1-8}/sensor/game_complete
-    else if (parts[0] === 'lunarlanes' && parts[1] === 'lane' && parts[3] === 'sensor' && parts[4] === 'game_complete') {
+    // Game complete sensor: openlanescheduler/lane/{1-8}/sensor/game_complete
+    else if (parts[0] === 'openlanescheduler' && parts[1] === 'lane' && parts[3] === 'sensor' && parts[4] === 'game_complete') {
       const lane = parseInt(parts[2]);
       handleGameCompleteSensor(lane, payload);
     }
 
-    // Device status: lunarlanes/device/{device_id}/online
-    else if (parts[0] === 'lunarlanes' && parts[1] === 'device' && parts[3] === 'online') {
+    // Device status: openlanescheduler/device/{device_id}/online
+    else if (parts[0] === 'openlanescheduler' && parts[1] === 'device' && parts[3] === 'online') {
       const deviceId = parts[2];
       handleDeviceStatus(deviceId, payload);
     }
 
-    // Device heartbeat: lunarlanes/device/{device_id}/heartbeat
-    else if (parts[0] === 'lunarlanes' && parts[1] === 'device' && parts[3] === 'heartbeat') {
+    // Device heartbeat: openlanescheduler/device/{device_id}/heartbeat
+    else if (parts[0] === 'openlanescheduler' && parts[1] === 'device' && parts[3] === 'heartbeat') {
       const deviceId = parts[2];
       log.debug(`Heartbeat from ${deviceId}`);
     }
@@ -298,7 +298,7 @@ function publishLaneStatusToMQTT(lane) {
     return;
   }
 
-  const topic = `lunarlanes/lane/${lane}/status`;
+  const topic = `openlanescheduler/lane/${lane}/status`;
   const payload = buildLaneStatusPayload(lane, state);
   const payloadStr = JSON.stringify(payload);
 
@@ -323,14 +323,14 @@ function publishAllLaneStatesToMQTT(fullState) {
 
   // Publish global time
   mqttClient.publish(
-    'lunarlanes/global/time',
+    'openlanescheduler/global/time',
     JSON.stringify({ timestamp: Date.now(), timezone: 'America/Chicago' }),
     { qos: 0, retain: true }
   );
 }
 
 function publishNextReservationToMQTT(lane, state) {
-  const topic = `lunarlanes/lane/${lane}/display/next_reservation`;
+  const topic = `openlanescheduler/lane/${lane}/display/next_reservation`;
 
   // Find next reservation for this lane
   const now = new Date();
@@ -473,7 +473,7 @@ function shutdown() {
 
   // Publish offline status
   mqttClient.publish(
-    'lunarlanes/bridge/status',
+    'openlanescheduler/bridge/status',
     JSON.stringify({ online: false, timestamp: Date.now() }),
     { qos: 1, retain: true },
     () => {
@@ -486,7 +486,7 @@ function shutdown() {
 
 // ── Startup Banner ──────────────────────────────────────
 console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-console.log('║                   LUNAR LANES MQTT BRIDGE                    ║');
+console.log('║                   OPENLANE SCHEDULER MQTT BRIDGE                    ║');
 console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
 log.info('Configuration:');

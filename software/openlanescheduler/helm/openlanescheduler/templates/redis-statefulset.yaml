@@ -2,9 +2,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "lunar-lanes.redis.fullname" . }}
+  name: {{ include "openlanescheduler.redis.fullname" . }}
   labels:
-    {{- include "lunar-lanes.labels" . | nindent 4 }}
+    {{- include "openlanescheduler.labels" . | nindent 4 }}
     app.kubernetes.io/component: redis
 spec:
   type: {{ .Values.redis.service.type }}
@@ -14,27 +14,27 @@ spec:
       protocol: TCP
       name: redis
   selector:
-    {{- include "lunar-lanes.selectorLabels" . | nindent 4 }}
+    {{- include "openlanescheduler.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: redis
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "lunar-lanes.redis.fullname" . }}
+  name: {{ include "openlanescheduler.redis.fullname" . }}
   labels:
-    {{- include "lunar-lanes.labels" . | nindent 4 }}
+    {{- include "openlanescheduler.labels" . | nindent 4 }}
     app.kubernetes.io/component: redis
 spec:
-  serviceName: {{ include "lunar-lanes.redis.fullname" . }}
+  serviceName: {{ include "openlanescheduler.redis.fullname" . }}
   replicas: 1
   selector:
     matchLabels:
-      {{- include "lunar-lanes.selectorLabels" . | nindent 6 }}
+      {{- include "openlanescheduler.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: redis
   template:
     metadata:
       labels:
-        {{- include "lunar-lanes.selectorLabels" . | nindent 8 }}
+        {{- include "openlanescheduler.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
       {{- with .Values.podSecurityContext }}

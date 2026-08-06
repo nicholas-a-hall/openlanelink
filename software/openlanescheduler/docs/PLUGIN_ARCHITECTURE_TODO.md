@@ -266,7 +266,7 @@ These would break any plugin that renders UI. Fix before Phase 2.
 |----------|-------|-----|
 | `App.jsx` ~line 696 | `rgba(0, 180, 255, ...)` hardcoded week intensity | Use `rgba(var(--ll-blue-rgb), ...)` |
 | `App.jsx` ~line 970 | `rgba(0, 0, 0, 0.7)` modal overlay | Use `C.overlayBg` (already in palette) |
-| `kiosk/src/LunarLanesKiosk.jsx` | `#555`, `rgba(0,0,0,0.9)`, `rgba(255,255,255,...)` in CSS `<style>` | Use `var(--ll-*)` CSS custom properties |
+| `kiosk/src/OpenLaneSchedulerKiosk.jsx` | `#555`, `rgba(0,0,0,0.9)`, `rgba(255,255,255,...)` in CSS `<style>` | Use `var(--ll-*)` CSS custom properties |
 
 See `frontend/src/THEMING_TODO.md` for full details.
 

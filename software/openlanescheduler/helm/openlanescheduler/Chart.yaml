@@ -1,5 +1,5 @@
 apiVersion: v2
-name: lunar-lanes
+name: openlanescheduler
 description: Real-time bowling alley management system with manager dashboard and lane kiosks
 type: application
 version: 1.0.0
@@ -9,7 +9,7 @@ keywords:
   - management
   - real-time
   - websocket
-home: https://github.com/yourusername/lunar-lanes
+home: https://github.com/yourusername/openlanescheduler
 maintainers:
-  - name: Lunar Lanes Team
-    email: support@lunarlanes.local
+  - name: OpenLane Scheduler Team
+    email: support@openlanescheduler.local

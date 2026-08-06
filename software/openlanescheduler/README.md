@@ -1,6 +1,6 @@
-# Lunar Lanes — Lane Management Dashboard
+# OpenLane Scheduler — Lane Management Dashboard
 
-Real-time lane management system for Lunar Lanes bowling alley. All connected displays share the same state via WebSocket.
+Real-time lane management system for OpenLane Scheduler bowling alley. All connected displays share the same state via WebSocket.
 
 ## Architecture
 
@@ -52,7 +52,7 @@ docker compose up --build
 **MQTT Endpoints:**
 - MQTT Broker: mqtt://localhost:1883
 - MQTT WebSocket: ws://localhost:9001
-- Monitor traffic: `mosquitto_sub -h localhost -t lunarlanes/# -v`
+- Monitor traffic: `mosquitto_sub -h localhost -t openlanescheduler/# -v`
 
 See [HARDWARE_INTEGRATION.md](HARDWARE_INTEGRATION.md) for ESP32/ESP8266 examples.
 
@@ -129,7 +129,7 @@ To enable creating, updating, and deleting reservations through the management U
 1. **Create a Service Account**:
    - Go to Google Cloud Console → IAM & Admin → Service Accounts
    - Click "Create Service Account"
-   - Name it (e.g., "lunar-lanes-manager")
+   - Name it (e.g., "openlanescheduler-manager")
    - Click "Create and Continue"
    - Skip the optional steps and click "Done"
 
@@ -463,7 +463,7 @@ hostname -I
 ## Project Structure
 
 ```
-lunar-lanes/
+openlanescheduler/
 ├── backend/
 │   ├── server.js              # Main Express + Socket.IO server
 │   ├── googleCalendar.js      # Google Calendar API client
@@ -519,7 +519,7 @@ All state is managed server-side in `backend/server.js`:
 - **`excludedEvents`**: Array of Google Calendar event IDs to skip (no-shows)
 
 **Redis Architecture:**
-- Separated keys for each state type (e.g., `lunar-lanes:reservations:2026-02-15`)
+- Separated keys for each state type (e.g., `openlanescheduler:reservations:2026-02-15`)
 - Date-based reservation keys for efficient querying
 - Delta updates broadcast via WebSocket (only changed data)
 - Full state snapshot on initial connection
@@ -548,7 +548,7 @@ All state is managed server-side in `backend/server.js`:
 
 ## Hardware Integration
 
-Lunar Lanes supports **optional** integration with ESP32/ESP8266 microcontrollers and PLCs for enhanced automation and customer experience. See **[HARDWARE_INTEGRATION.md](HARDWARE_INTEGRATION.md)** for complete guide.
+OpenLane Scheduler supports **optional** integration with ESP32/ESP8266 microcontrollers and PLCs for enhanced automation and customer experience. See **[HARDWARE_INTEGRATION.md](HARDWARE_INTEGRATION.md)** for complete guide.
 
 **Supported Features:**
 - Physical service call buttons at each lane
@@ -577,4 +577,4 @@ COMPOSE_PROFILES=mqtt docker-compose up --build
 
 ## License
 
-Proprietary - Lunar Lanes Bowling Alley
+Proprietary - OpenLane Scheduler Bowling Alley

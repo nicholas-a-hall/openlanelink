@@ -1,5 +1,5 @@
 
-🌙 Lunar Lanes has been deployed! 🎳
+🌙 OpenLane Scheduler has been deployed! 🎳
 
 {{- if .Values.ingress.enabled }}
 {{- range .Values.ingress.hosts }}
@@ -49,7 +49,7 @@ Configuration Status:
 ⚠️  IMPORTANT: Google Calendar integration not configured!
 
 To enable Google Calendar sync, update the values:
-  helm upgrade {{ .Release.Name }} lunar-lanes/lunar-lanes \
+  helm upgrade {{ .Release.Name }} openlanescheduler/openlanescheduler \
     --set backend.googleCalendar.apiKey="YOUR_API_KEY" \
     --set backend.googleCalendar.calendarId="YOUR_CALENDAR_ID" \
     --set backend.googleCalendar.serviceAccountJson='{"type":"service_account",...}'
@@ -64,12 +64,12 @@ Useful Commands:
   kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/component=backend" -f
 
   # View Redis status
-  kubectl get statefulset -n {{ .Release.Namespace }} {{ include "lunar-lanes.redis.fullname" . }}
+  kubectl get statefulset -n {{ .Release.Namespace }} {{ include "openlanescheduler.redis.fullname" . }}
 
   # Scale backend
-  kubectl scale deployment -n {{ .Release.Namespace }} {{ include "lunar-lanes.backend.fullname" . }} --replicas=3
+  kubectl scale deployment -n {{ .Release.Namespace }} {{ include "openlanescheduler.backend.fullname" . }} --replicas=3
 
   # Restart backend
-  kubectl rollout restart deployment -n {{ .Release.Namespace }} {{ include "lunar-lanes.backend.fullname" . }}
+  kubectl rollout restart deployment -n {{ .Release.Namespace }} {{ include "openlanescheduler.backend.fullname" . }}
 
-For more information, visit: https://github.com/yourusername/lunar-lanes
+For more information, visit: https://github.com/yourusername/openlanescheduler

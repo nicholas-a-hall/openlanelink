@@ -4,9 +4,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "lunar-lanes.fullname" $ }}-kiosk-{{ .name }}
+  name: {{ include "openlanescheduler.fullname" $ }}-kiosk-{{ .name }}
   labels:
-    {{- include "lunar-lanes.labels" $ | nindent 4 }}
+    {{- include "openlanescheduler.labels" $ | nindent 4 }}
     app.kubernetes.io/component: kiosk
     kiosk-instance: {{ .name }}
 spec:
@@ -17,33 +17,33 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "lunar-lanes.selectorLabels" $ | nindent 4 }}
+    {{- include "openlanescheduler.selectorLabels" $ | nindent 4 }}
     app.kubernetes.io/component: kiosk
     kiosk-instance: {{ .name }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "lunar-lanes.fullname" $ }}-kiosk-{{ .name }}
+  name: {{ include "openlanescheduler.fullname" $ }}-kiosk-{{ .name }}
   labels:
-    {{- include "lunar-lanes.labels" $ | nindent 4 }}
+    {{- include "openlanescheduler.labels" $ | nindent 4 }}
     app.kubernetes.io/component: kiosk
     kiosk-instance: {{ .name }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      {{- include "lunar-lanes.selectorLabels" $ | nindent 6 }}
+      {{- include "openlanescheduler.selectorLabels" $ | nindent 6 }}
       app.kubernetes.io/component: kiosk
       kiosk-instance: {{ .name }}
   template:
     metadata:
       labels:
-        {{- include "lunar-lanes.selectorLabels" $ | nindent 8 }}
+        {{- include "openlanescheduler.selectorLabels" $ | nindent 8 }}
         app.kubernetes.io/component: kiosk
         kiosk-instance: {{ .name }}
     spec:
-      serviceAccountName: {{ include "lunar-lanes.serviceAccountName" $ }}
+      serviceAccountName: {{ include "openlanescheduler.serviceAccountName" $ }}
       {{- with $.Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -62,7 +62,7 @@ spec:
               protocol: TCP
           env:
             - name: VITE_BACKEND_URL
-              value: "http://{{ include "lunar-lanes.backend.fullname" $ }}:{{ $.Values.backend.service.port }}"
+              value: "http://{{ include "openlanescheduler.backend.fullname" $ }}:{{ $.Values.backend.service.port }}"
             - name: KIOSK_LANES
               value: {{ .lanes | quote }}
           resources:

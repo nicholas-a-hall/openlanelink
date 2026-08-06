@@ -2,9 +2,9 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "lunar-lanes.fullname" . }}
+  name: {{ include "openlanescheduler.fullname" . }}
   labels:
-    {{- include "lunar-lanes.labels" . | nindent 4 }}
+    {{- include "openlanescheduler.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -33,7 +33,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "lunar-lanes.fullname" $ }}-{{ .service }}
+                name: {{ include "openlanescheduler.fullname" $ }}-{{ .service }}
                 port:
                   number: {{ .port }}
           {{- end }}

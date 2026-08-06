@@ -23,7 +23,7 @@ export default function BootScreen({ lanes = [] }) {
         marginBottom: 40,
         letterSpacing: 4,
       }}>
-        LUNAR LANES
+        OPENLANE SCHEDULER
       </div>
       <div style={{
         fontFamily: F.mono,

@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "lunar-lanes.fullname" . }}-config
+  name: {{ include "openlanescheduler.fullname" . }}-config
   labels:
-    {{- include "lunar-lanes.labels" . | nindent 4 }}
+    {{- include "openlanescheduler.labels" . | nindent 4 }}
 data:
   TZ: {{ .Values.global.timezone | quote }}
   NODE_ENV: {{ .Values.backend.env.nodeEnv | quote }}
   GCAL_SYNC_INTERVAL: {{ .Values.backend.env.gcalSyncInterval | quote }}
-  REDIS_URL: {{ include "lunar-lanes.redisUrl" . | quote }}
+  REDIS_URL: {{ include "openlanescheduler.redisUrl" . | quote }}
