@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useLaneFeed } from "../../lib/useLaneFeed.js";
-import { ballGlyph, currentTotal, nextThrow, STRIKE } from "../../lib/scoring.js";
+import { ballGlyph, STRIKE } from "../../lib/scoring.js";
 import { T } from "../../lib/theme.js";
 
 /* Neumorphic raised/recessed helpers, tuned for the tablet control screen
@@ -60,10 +60,12 @@ function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isA
   );
 }
 
-function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame }) {
-  const total = useMemo(() => currentTotal(bowler.frames), [bowler.frames]);
-  const finished = bowler.frames[bowler.frames.length - 1].complete;
-  const up = isActive && !finished ? nextThrow(bowler.frames) : null;
+function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame, currentFrame, currentBall }) {
+  const total = bowler.totalScore;
+  // currentFrame/currentBall come straight from the state machine's own
+  // snapshot (lane.currentFrame/currentBall) -- only meaningful for
+  // whichever bowler is actually active, never re-derived from frames here.
+  const up = isActive && currentFrame != null ? { frame: currentFrame - 1, ball: currentBall - 1 } : null;
   const isUpTurn = !!up;
 
   return (
@@ -222,7 +224,7 @@ function RosterBar({ bowlers, activeId, onAdd, onRemove }) {
             borderRadius: 11, ...(b.id === activeId ? recessed(11) : raised(11)),
           }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: b.id === activeId ? T.yellow : T.text }}>{b.name}</span>
-            <span style={{ fontSize: 12, color: T.muted, fontFamily: "monospace" }}>{currentTotal(b.frames)}</span>
+            <span style={{ fontSize: 12, color: T.muted, fontFamily: "monospace" }}>{b.totalScore}</span>
             <button onClick={() => onRemove(b.id)} style={{
               width: 20, height: 20, borderRadius: "50%", border: "none", cursor: "pointer",
               color: T.muted, background: "rgba(0,0,0,0.3)", fontSize: 12, lineHeight: 1,
@@ -261,7 +263,7 @@ export default function ControlLane() {
   );
   const allComplete = lane.machineState === "GAME_COMPLETE";
   const topScore = useMemo(
-    () => (allComplete ? Math.max(...lane.bowlers.map((b) => currentTotal(b.frames))) : null),
+    () => (allComplete ? Math.max(...lane.bowlers.map((b) => b.totalScore)) : null),
     [allComplete, lane.bowlers]
   );
 
@@ -308,8 +310,9 @@ export default function ControlLane() {
           <ScoreRow
             key={b.id} bowler={b}
             isActive={allComplete || activeBowler?.id === b.id}
-            isWinner={allComplete && currentTotal(b.frames) === topScore}
+            isWinner={allComplete && b.totalScore === topScore}
             onTapFrame={(frameIdx) => setEditing({ bowlerId: b.id, frameIdx })}
+            currentFrame={lane.currentFrame} currentBall={lane.currentBall}
           />
         ))
       )}
@@ -321,7 +324,7 @@ export default function ControlLane() {
         }}>
           <span style={{ fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: T.muted, fontWeight: 700 }}>Final</span>
           <span style={{ fontSize: 15, fontWeight: 700, color: T.yellow }}>
-            ★ {lane.bowlers.filter((b) => currentTotal(b.frames) === topScore).map((b) => b.name).join(" & ")} — {topScore}
+            ★ {lane.bowlers.filter((b) => b.totalScore === topScore).map((b) => b.name).join(" & ")} — {topScore}
           </span>
         </div>
       ) : (

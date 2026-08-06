@@ -232,8 +232,18 @@ node has no ad-scheduling backend, only game state.
 {
   id: string,            // backend-assigned, stable, durable (see note below)
   name: string,
-  frames: Frame[],        // see 3.2 — length is gt.frameCount, 10 for every
+  frames: Frame[],        // see below — length is gt.frameCount, 10 for every
                            // game type today (ten-pin/no-tap/duckpin)
+  totalScore: number,     // explicit -- the client never scans `frames` for the
+                           // last resolved runningTotal itself
+  currentFrame: number | null,  // 1-indexed frame this bowler is on; null once
+                                 // THIS bowler's own game is complete
+  currentBall: number | null,   // 1-indexed -- which ball of currentFrame is next
+                                 // for them. Well-defined for every bowler on the
+                                 // roster, not just whoever currently has the turn
+                                 // (Lane.currentBowlerId, below) -- e.g. DisplayLane's
+                                 // frame spotlight needs every bowler's own position,
+                                 // not just the active one's.
 }
 ```
 
@@ -263,13 +273,19 @@ Each `Frame`, straight from `state_machine/game_state.py`'s `score_game()`:
 }
 ```
 
-`lib/scoring.js` derives from this array: `ballGlyph` (glyph per ball),
-`currentTotal` (most recent resolved `runningTotal`), `gameComplete`
-(last frame's `complete`), `nextThrow` (first frame with `turnOver:
-false`, and how many balls are in it), `countStrikes`/`countSpares`/
-`pinfall` (used by `BowlerStatsPanel`). If a future component needs a
-number that isn't already derivable, add the derivation there — don't
-compute it locally in the component.
+**The UI must never infer `totalScore`/`currentFrame`/`currentBall` (or
+whose turn it is) by re-deriving them from `frames` itself** — scanning for
+the last resolved `runningTotal`, the first frame with `turnOver: false`,
+tallying ball counts, etc. That's exactly the client/server duplication
+this whole backend exists to avoid; those three fields (plus `Lane.
+currentBowlerId`) are the backend's own explicit, single-computed answer to
+"what's next," and the UI just reads them. `lib/scoring.js` only derives
+genuinely presentational values now: `ballGlyph` (glyph per ball),
+`gameComplete` (a direct read of the last frame's `complete`, not a
+computation), `countStrikes`/`countSpares`/`pinfall` (used by
+`BowlerStatsPanel`). If a future component needs a number that isn't
+already explicit, add it to the backend's snapshot — don't derive it
+locally in a component or add it back to `lib/scoring.js`.
 
 **Bowler `id` stability**: backend-assigned (`game_state.py`'s
 `Bowler.id`, a short hex string), stable across a reconnect — safe to use

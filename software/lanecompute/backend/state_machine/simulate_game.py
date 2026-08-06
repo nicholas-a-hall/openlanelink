@@ -22,8 +22,13 @@ import requests
 
 DELAY = 0.9  # pause between deliveries so it's actually watchable
 
-# Frame-by-frame scripts, one entry per frame. Each is already a legal
-# ten-pin sequence (sum <= 10 within a frame, except a fresh-rack strike).
+# Frame-by-frame scripts, one entry per frame. Each is a legal ten-pin
+# sequence (sum <= 10 within a frame, except a fresh-rack strike -- a
+# "second-ball strike" is physically impossible and never appears here).
+# Not just hand-verified: game_state.py's record_ball() now rejects any
+# pinfall that exceeds what's actually still standing, so an invalid
+# sequence here would surface as a 400 from /pinfall, not silently corrupt
+# the scoresheet.
 ALICE = [
     [10], [7, 2], [9, 1], [10], [10],
     [6, 3], [10], [8, 2], [10], [10, 10, 10],

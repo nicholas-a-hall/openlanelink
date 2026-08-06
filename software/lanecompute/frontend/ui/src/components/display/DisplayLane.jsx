@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ballGlyph, currentTotal, gameComplete, nextThrow } from "../../lib/scoring.js";
+import { ballGlyph, gameComplete } from "../../lib/scoring.js";
 import { MIN_COMPONENT_VH, ThemeProvider, useTheme } from "../../lib/themes.js";
 import { Clock, LivePill } from "../shared/Chrome.jsx";
 import Ticker from "./Ticker.jsx";
@@ -50,10 +50,12 @@ function laneFrameIndex(bowlers) {
   const playing = bowlers.filter((b) => !gameComplete(b.frames));
   if (playing.length === 0) return null;
   const lastFrameIdx = playing[0].frames.length - 1;
+  // currentFrame is 1-indexed and well-defined per bowler regardless of
+  // whose turn it actually is (game_state.py's snapshot) -- no scanning
+  // frames/turnOver here anymore.
   let min = lastFrameIdx;
   for (const b of playing) {
-    const nt = nextThrow(b.frames);
-    const f = nt ? nt.frame : lastFrameIdx;
+    const f = b.currentFrame != null ? b.currentFrame - 1 : lastFrameIdx;
     if (f < min) min = f;
   }
   return min;
@@ -80,7 +82,7 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
   const { T, elevation } = useTheme();
   const card = elevation("card");
   const inset = elevation("inset");
-  const total = currentTotal(bowler.frames);
+  const total = bowler.totalScore;
   // Width-driven font-size ceiling, computed per actual content length
   // rather than a fixed worst-case constant -- "BOB" gets to render much
   // larger than "TWELVECHARNAM" would, instead of both being capped
@@ -98,7 +100,9 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
   for (let i = 0; i < bowler.frames.length; i++) if (bowler.frames[i].balls.length > 0) activeFrame = i;
   // Which exact ball is about to be thrown — only meaningful for the
   // bowler actually up right now.
-  const upNext = isUp ? nextThrow(bowler.frames) : null;
+  const upNext = isUp && bowler.currentFrame != null
+    ? { frame: bowler.currentFrame - 1, ball: bowler.currentBall - 1 }
+    : null;
 
   return (
     <div ref={ref} style={{
@@ -478,7 +482,7 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${T.border}`, paddingBottom: "0.8vh", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "1.2vmin" }}>
             <span style={{ fontFamily: "'Orbitron','Barlow Condensed',sans-serif", fontSize: "clamp(14px,2.6vmin,32px)", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              LANE {laneId}
+              OVERHEAD SCORING, LANE {laneId}
             </span>
             <span style={{
               fontFamily: T.fontMono, fontSize: "clamp(8px,1.1vmin,14px)", padding: "0.3vmin 1vmin", borderRadius: 6,

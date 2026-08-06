@@ -1,4 +1,3 @@
-import { currentTotal } from "../../lib/scoring.js";
 import { useTheme } from "../../lib/themes.js";
 
 /**
@@ -36,7 +35,7 @@ export default function ScoreBug({ laneId, bowlers, activeBowlerId, floating = f
         }}>
           {b.name}
           <span style={{ fontFamily: T.fontMono, fontSize: "clamp(10px,1.6vmin,22px)", fontWeight: 700 }}>
-            {currentTotal(b.frames)}
+            {b.totalScore}
           </span>
         </span>
       ))}

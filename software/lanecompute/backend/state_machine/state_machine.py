@@ -50,6 +50,12 @@ class LaneStateMachine:
         self.state = State.READY
 
     def snapshot(self) -> dict:
+        """Whose turn it is. What frame/ball that bowler is on lives on
+        their own entry in game_state.LaneState.snapshot()'s `bowlers`
+        list (currentFrame/currentBall there, well-defined for every
+        bowler, not just whoever's up) -- looking that up by
+        currentBowlerId is how a client finds "what's next" without
+        re-deriving it from raw frame data itself."""
         return {
             "machineState": self.state.name,
             "currentBowlerId": self._current_bowler_id(),

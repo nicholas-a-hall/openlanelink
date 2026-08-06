@@ -126,11 +126,23 @@ class LaneState:
 
     # ---- scoring ----
     def record_ball(self, bowler_id: str, pinfall: int) -> None:
+        """A ball can only knock down pins that are actually still standing
+        -- e.g. ball1=9 leaves at most 1 pin for ball2; a "second-ball
+        strike" is physically impossible in real ten-pin (frames 1-9) and
+        this must never silently accept one. The only ball that's ever
+        unconstrained by the frame's running sum is the first ball of a
+        frame, or the ball right after a clear (fresh rack -- the final
+        frame's bonus balls after a strike/spare)."""
         bowler = self._require_bowler(bowler_id)
         gt = self._game_type()
         _validate_pinfall(pinfall, gt)
         if _is_complete(bowler.balls, gt):
             raise ValueError(f"bowler {bowler_id}'s game is already complete")
+        remaining = _pins_remaining_for_next_ball(_current_frame_balls(bowler.balls, gt), gt)
+        if pinfall > remaining:
+            raise ValueError(
+                f"pinfall {pinfall} exceeds the {remaining} pin(s) still standing this frame"
+            )
         bowler.balls.append(pinfall)
 
     def edit_score(self, bowler_id: str, frame_number: int, ball_in_frame: int, pinfall: int) -> None:
@@ -173,7 +185,16 @@ class LaneState:
         return score_game(bowler.balls, self._game_type())
 
     def snapshot(self) -> dict:
-        """Everything a display/control client needs for this lane."""
+        """Everything a display/control client needs for this lane --
+        including totalScore/currentFrame/currentBall per bowler, computed
+        here rather than left for the client to re-derive by scanning
+        `frames` (the last resolved runningTotal, the first non-turnOver
+        frame, ball counts, ...). The UI should read game state, never
+        infer it. currentFrame/currentBall are well-defined for every
+        bowler regardless of whose turn it actually is right now (see
+        state_machine.py's currentBowlerId for that) -- e.g. DisplayLane's
+        frame spotlight needs to know where EVERY bowler on the lane
+        stands, not just whoever's currently up."""
         return {
             "laneNumber": self.lane_number,
             "game": {
@@ -185,12 +206,29 @@ class LaneState:
                 {
                     "id": bid,
                     "name": self.bowlers[bid].name,
-                    "frames": self.frames(bid),
+                    "frames": (frames := self.frames(bid)),
+                    "totalScore": self._total_score(frames),
+                    "currentFrame": (cf := self._current_frame_and_ball(frames))[0],
+                    "currentBall": cf[1],
                 }
                 for bid in self._bowler_order
                 if bid in self.bowlers
             ],
         }
+
+    @staticmethod
+    def _total_score(frames: list[dict]) -> int:
+        for f in reversed(frames):
+            if f["runningTotal"] is not None:
+                return f["runningTotal"]
+        return 0
+
+    @staticmethod
+    def _current_frame_and_ball(frames: list[dict]) -> tuple[int | None, int | None]:
+        f = next((fr for fr in frames if not fr["turnOver"]), None)
+        if f is None:
+            return None, None  # this bowler's game is complete -- nothing left to throw
+        return f["frame"], len(f["balls"]) + 1
 
 
 def _validate_pinfall(pinfall: int, gt: GameType) -> None:
@@ -201,6 +239,37 @@ def _validate_pinfall(pinfall: int, gt: GameType) -> None:
 def _is_complete(balls: list[int], gt: GameType) -> bool:
     frames = score_game(balls, gt)
     return bool(frames) and frames[-1]["complete"]
+
+
+def _current_frame_balls(balls: list[int], gt: GameType) -> list[int]:
+    """Balls already thrown in whichever frame the *next* ball would land
+    in -- [] if the next ball starts a brand new frame (nothing thrown yet,
+    or the most recent frame already closed)."""
+    frames = score_game(balls, gt)
+    in_progress = [f for f in frames if f["balls"] and not f["turnOver"]]
+    return in_progress[-1]["balls"] if in_progress else []
+
+
+def _pins_remaining_for_next_ball(frame_balls_so_far: list[int], gt: GameType) -> int:
+    """How many pins the next ball can legally knock down, given what's
+    already been thrown in the current frame. A fresh rack
+    (pins_per_throw_max) applies to the very first ball of a frame, and
+    resets again immediately after any clear within the frame -- the only
+    place that matters is the final frame's bonus balls after a strike or
+    spare, which are thrown at fresh racks, not constrained by the frame's
+    earlier running sum. (Regular frames 1-9 never have a "ball after a
+    clear" to validate this way -- turnOver ends the frame the instant it
+    clears, so there's nothing left in that same frame to throw.)"""
+    remaining = gt.pins_per_throw_max
+    total = 0
+    for pos, b in enumerate(frame_balls_so_far):
+        total += b
+        threshold = gt.strike_threshold if pos == 0 else gt.pins_per_throw_max
+        if total >= threshold:
+            remaining, total = gt.pins_per_throw_max, 0  # cleared -- fresh rack for whatever's next
+        else:
+            remaining = gt.pins_per_throw_max - total
+    return remaining
 
 
 def _take_regular_frame(balls: list[int], i: int, gt: GameType) -> tuple[list[int], int, bool, bool, bool]:
