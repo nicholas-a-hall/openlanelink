@@ -15,12 +15,15 @@ building the compute-node backend or testing the UI standalone.
 
 ## Where things stand
 
-Everything here runs against **dummy/mock data** — there is no backend
-yet. The compute node (Raspberry Pi on the gateway) is meant to run a
-WebSocket service per lane that maintains real game state and pushes it
-down; nothing in this repo implements that service. The two files that
-fake it are called out below — swapping in the real thing should mean
-rewriting *those files only*, not the components that consume them.
+`useLaneFeed.js` connects for real to the compute node (2026-08-06) —
+`software/lanecompute/backend/state_machine`, a FastAPI service on the
+Raspberry Pi wired to the gateway. Real WebSocket (`/ws/display/{lane}`,
+read-only) for state, real REST for every mutating action. See `API.md`
+§3 for the exact wire shapes.
+
+`useTakeoverFeed.js` is still a mock — the compute node has no
+ad-scheduling backend at all, only game state, so there's nothing real to
+connect it to yet. It's called out below same as before.
 
 ## Routes
 
@@ -37,9 +40,12 @@ src/
   App.jsx                    route table
   main.jsx                   React root + BrowserRouter
   lib/
-    scoring.js                shared 10-pin scoring engine (frames, running
-                               totals, applyBall, computeUp/nextThrow/etc.)
-                               — single source of truth for BOTH screens
+    scoring.js                presentational-only helpers now (ballGlyph,
+                               currentTotal, gameComplete, nextThrow,
+                               countStrikes/countSpares/pinfall) — derives
+                               from the backend's own per-frame data,
+                               doesn't compute scores itself anymore. See
+                               its module docstring and API.md §3.1.
     themes.js                 display's theme system: named presets
                                (midnight-arcade, daylight, broadcast-flat)
                                + custom-object override, ThemeProvider/
@@ -51,12 +57,15 @@ src/
                                API.md §2.7
     theme.js                  OLD static Midnight Arcade tokens — still
                                used by ControlLane only (see Known gaps)
-    useLaneFeed.js             ⚠ DUMMY BACKEND STAND-IN — per-lane game
-                               state + simulated deliveries. Real shape:
-                               { lane, running, actions }
+    useLaneFeed.js             REAL per-lane connection to the compute
+                               node — WebSocket for state, REST for
+                               actions (addBowler/removeBowler/
+                               correctBall), auto-reconnect. Shape:
+                               { lane, actions } — see API.md §3.2/3.4
     useTakeoverFeed.js         ⚠ DUMMY BACKEND STAND-IN — mock schedule
-                               for full-screen ad/video/stats/message
-                               takeovers. Real shape: { activeTakeover }
+                               for full-screen ad/video/message
+                               takeovers (no real ad-scheduling backend
+                               exists). Real shape: { activeTakeover }
   components/
     control/ControlLane.jsx    9:16 tablet: roster, turn rotation,
                                tap-a-frame pin-picker correction modal
@@ -68,8 +77,7 @@ src/
       DisplayLanePage.jsx      route container: wires useLaneFeed +
                                useTakeoverFeed + theme into <DisplayLane>,
                                decides what fills the below-scores slot
-                               (EventLog + MiniAd) — THIS is the file to
-                               rewire once a real backend exists
+                               (EventLog + MiniAd)
       Ticker.jsx                bottom banner, only renders when enabled
       ScoreBug.jsx               compact all-bowlers strip (used during
                                  ad/video/message takeovers)
@@ -78,8 +86,8 @@ src/
                                  hardcoded inside it
       layers/
         TakeoverLayer.jsx        renders whatever activeTakeover prop says
-                                 (ad/video/stats/message) — no scheduling
-                                 logic of its own
+                                 (ad/video/message) — no scheduling logic
+                                 of its own
         CelebrationLayer.jsx     event-triggered (not externally
                                  scheduled) short overlay, e.g. a strike
                                  burst — self-contained, watches lane
@@ -91,9 +99,9 @@ src/
 `<DisplayLane laneId lane theme activeTakeover tickerMessages
 tickerEnabled celebrationAssets>{children}</DisplayLane>` — full prop
 docs are in the JSDoc block at the bottom of the file. It's pure: all
-state comes in via props, nothing is fetched or hardcoded inside it, so
-it can be driven by the dummy hooks today or a real feed later with zero
-changes to the component itself.
+state comes in via props, nothing is fetched or hardcoded inside it — it
+can be driven by the real feed (useLaneFeed) or hand-authored data
+(API.md §4) with zero changes to the component itself.
 
 ## Theming
 
@@ -181,49 +189,71 @@ flush against the frames grid, not the sheet's outer edge).
 
 ## Takeovers
 
-`TakeoverLayer` renders four kinds: `ad`, `video`, `stats`, `message`.
-- `stats` fully replaces the screen (no persistent score display).
+`TakeoverLayer` renders three kinds: `ad`, `video`, `message`. (A fourth,
+`stats`, existed when this was all mock data — rendered lane-wide
+strike-rate/nightly-pinfall/jam counts. Removed: `game_state.py` is
+per-game, not per-night, so there's nothing real to show. Bring it back
+if that data ever exists server-side.)
 - `ad` / `video` / `message` keep a persistent `ScoreBug` in their own
   reserved row below the content (previously this was absolutely
   positioned *over* the content — fixed).
 - **Advertising (`ad`/`video` only) is gated on there being no active
-  game** — `DisplayLanePage` computes `hasActiveGame` from lane state and
-  passes it into `useTakeoverFeed`; in production this decision belongs
-  to the compute node, this is just the mock's stand-in. `stats` and
-  `message` are not gated the same way.
+  game** — `DisplayLanePage` computes `hasActiveGame` from the real
+  `lane.machineState` and passes it into `useTakeoverFeed`; the
+  *gating decision* is real, the *takeover schedule itself* is still the
+  mock (there's no ad-scheduling backend to hand that decision to yet).
 
 No real ad/video/celebration media assets exist yet — `MOCK_MINI_AD`
 and the takeover `SCRIPT` in `useTakeoverFeed.js` use an inline
 placeholder SVG; `celebrationAssets` defaults to `{}` (no-op).
 
-## Dummy data specifics (`useLaneFeed.js`)
+## Real backend connection (`useLaneFeed.js`)
 
-- 6 randomly-named bowlers per lane (`BOWLERS_PER_LANE`, drawn from a
-  16-name pool, no repeats within a lane).
-- Simulated delivery every **3000-4600ms** (slowed once already — was
-  1400-2200ms, too fast to observe/read).
-- Pin outcomes are **recreational-league skill**, not pro: modest
-  strike/spare rates, real chance of an outright gutter ball on either
-  delivery (`simulateBallPins()`). The original version reused one
-  random draw for both the strike-check and the pin count, which made a
-  first-ball gutter mathematically impossible — fixed.
-- Auto-restarts the game 4s after every bowler completes their 10th
-  frame.
+- WebSocket to `/ws/display/{laneId}` on the compute node
+  (`state_machine/api.py`), read-only — every mutating action is a separate
+  REST call (API.md §3.4), never sent over the socket.
+- Auto-reconnects on close (3s delay) rather than surfacing a dead
+  connection permanently; `lane.connected` reflects live state,
+  `ControlLane`'s topbar shows it instead of the old fake
+  "pinsetter live/paused" toggle (which had no real backend equivalent —
+  there's no "pause accepting pinsetter events" endpoint).
+- Auto-starts a game: immediately once bowlers exist on an otherwise-idle
+  lane, and a few seconds after `machineState` reaches `GAME_COMPLETE`
+  (product decision — no manual "next game" button today). Guarded
+  against a duplicate `POST /games` race with a ref, not a real lock.
+- `events` (EventLog/CelebrationLayer) aren't pushed by the backend as a
+  list — synthesized client-side by diffing successive state snapshots
+  for newly-appended balls, plus `assistance_requested` broadcasts.
+  Purely cosmetic; scoring never depends on it. Strike-triggered
+  celebration events only fire on a literal 10-pin ball value today, not
+  no-tap's relaxed 9-pin threshold — celebrations have no real video
+  assets yet either way, so this wasn't worth the extra precision.
 
 ## Known gaps
 
-- **No real backend.** `useLaneFeed`/`useTakeoverFeed` are the only two
-  files standing in for it.
-- **State isn't shared between tabs/devices.** Each `/display/:laneId`
-  and `/control/:laneId` mounts its own independent `useLaneFeed`
-  instance — a control tablet's roster changes are invisible to that
-  lane's display monitor right now, since there's no shared store or
-  socket yet.
-- **No persistence.** Refreshing a page resets to a fresh random roster.
+- **`useTakeoverFeed` still has no real backend** — no ad-scheduling
+  service exists on the compute node at all, only game state.
+- **No pin-deck visuals, jam alerts, or session stats.** These existed in
+  the old mock `Lane` shape (`pins`/`flashPins`/`alert`/`nightlyPins`/
+  `strikes`/`deliveries`/`stops`/`jams`) and were dropped when wiring in
+  the real backend, since nothing produces them server-side — pin-deck
+  needs `vision/pinfall.py` (not implemented), jam detection needs
+  something to act on the mesh's `STATUS_RELAY_FAULT` (nothing does yet),
+  session stats would need the backend to track more than one game.
+- **10th-frame-specific UI (frame-box count, "isTenth" checks) still
+  assumes ten-pin's 2-then-3-ball shape.** The backend now supports
+  duckpin (3 balls per *regular* frame, not just the final one) via
+  `game_types.py`, but `ControlLane`/`DisplayLane`'s frame-box rendering
+  wasn't adapted for a variable regular-frame ball count — picking
+  `game_type: "duckpin"` when starting a game will under-render frame
+  boxes for anyone who takes a 3rd ball in a regular frame. Ten-pin and
+  no-tap (still 2-then-3) render correctly.
+- **No manual "start next game" control.** `useLaneFeed` auto-starts one
+  instead (see above) — a deliberate product decision, not an oversight,
+  but there's also no way to pick a non-default `game_type` from the UI
+  yet (the REST call supports it; nothing in `ControlLane` exposes it).
 - **ControlLane still on the old theme system** (`lib/theme.js`), not
   `lib/themes.js` — inconsistent with the display side.
-- **Neither `dev/GitHub/openlanelink` nor `dev/doodles/openlanelink` is a
-  git repo** — nothing here is under version control yet.
 
 ## Reference material this was built from
 
@@ -237,18 +267,27 @@ review notes from when those were first surveyed.
 
 ## Next
 
-1. Build the real compute-node WebSocket service and rewrite
-   `useLaneFeed`/`useTakeoverFeed` to consume it instead of simulating.
-2. Share state across a lane's display + control tablet (same socket
-   connection, or a shared store keyed by laneId).
-3. Migrate `ControlLane` onto `lib/themes.js`.
-4. Source real ad/video/celebration media once available; wire ad/video
+1. ~~Build the real compute-node WebSocket service and rewrite
+   `useLaneFeed`~~ — done (2026-08-06), see "Real backend connection"
+   above. `useTakeoverFeed` still needs an ad-scheduling backend to
+   connect to, which doesn't exist yet.
+2. ~~Share state across a lane's display + control tablet~~ — done as a
+   side effect of #1: both routes now independently connect to the same
+   server-side lane state (own WS connection each, not a shared client
+   store), so a control tablet's changes are visible on that lane's
+   display within one broadcast round-trip.
+3. Adapt frame-box rendering for duckpin's variable regular-frame ball
+   count (see "Known gaps") — needed before duckpin is actually usable
+   from the UI, not just the backend.
+4. Expose `game_type` selection in `ControlLane` (currently REST-only).
+5. Migrate `ControlLane` onto `lib/themes.js`.
+6. Source real ad/video/celebration media once available; wire ad/video
    content into `MOCK_MINI_AD`/the takeover `SCRIPT` (still per-venue
    content, not theme-owned), and celebration clips into each preset's
    `assets.celebrationAssets` in `lib/themes.js`.
-5. Decide on and implement device-identity/config delivery for real
+7. Decide on and implement device-identity/config delivery for real
    kiosk hardware (still just a URL param today, per-lane).
-6. Build an actual theme select/create UI (a venue-facing picker or
+8. Build an actual theme select/create UI (a venue-facing picker or
    editor that produces the descriptor object `resolveTheme()` already
    accepts) — the data model supports arbitrary custom themes today, but
    nothing surfaces that to a non-developer yet.

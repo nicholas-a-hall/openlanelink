@@ -1,10 +1,7 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useLaneFeed } from "../../lib/useLaneFeed.js";
-import {
-  ballGlyph, computeUp, currentTotal, gameComplete,
-  nextThrow, scoreGame, STRIKE,
-} from "../../lib/scoring.js";
+import { ballGlyph, currentTotal, nextThrow, STRIKE } from "../../lib/scoring.js";
 import { T } from "../../lib/theme.js";
 
 /* Neumorphic raised/recessed helpers, tuned for the tablet control screen
@@ -37,7 +34,7 @@ function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isA
       <div style={{ display: "flex", height: 30, borderBottom: cellBorder }}>
         {Array.from({ length: boxes }).map((_, i) => {
           const active = isUp && upBall === i;
-          const glyph = ballGlyph(frame, i, isTenth);
+          const glyph = ballGlyph(frame.balls, i, isTenth);
           const isMark = glyph === "X" || glyph === "/";
           return (
             <div key={i} style={{
@@ -64,9 +61,8 @@ function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isA
 }
 
 function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame }) {
-  const scored = useMemo(() => scoreGame(bowler.frames), [bowler.frames]);
   const total = useMemo(() => currentTotal(bowler.frames), [bowler.frames]);
-  const finished = gameComplete(bowler.frames);
+  const finished = bowler.frames[bowler.frames.length - 1].complete;
   const up = isActive && !finished ? nextThrow(bowler.frames) : null;
   const isUpTurn = !!up;
 
@@ -100,8 +96,8 @@ function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame }) {
       }}>
         {bowler.frames.map((frame, fi) => (
           <FrameCell
-            key={fi} frame={frame} frameIdx={fi} isTenth={fi === 9}
-            running={scored[fi].running} isUp={up && up.frame === fi} upBall={up && up.frame === fi ? up.ball : -1}
+            key={fi} frame={frame} frameIdx={fi} isTenth={fi === bowler.frames.length - 1}
+            running={frame.runningTotal} isUp={up && up.frame === fi} upBall={up && up.frame === fi ? up.ball : -1}
             isActive={isActive} onTap={onTapFrame}
           />
         ))}
@@ -134,8 +130,8 @@ function PinPicker({ knockedDown, onChange }) {
 }
 
 function CorrectionModal({ bowler, frameIdx, onCommit, onClose }) {
-  const frame = bowler.frames[frameIdx] || [];
-  const isTenth = frameIdx === 9;
+  const frame = bowler.frames[frameIdx]?.balls || [];
+  const isTenth = frameIdx === bowler.frames.length - 1;
   const [ballIdx, setBallIdx] = useState(0);
   const [knocked, setKnocked] = useState(new Set());
   const ballsInFrame = isTenth ? 3 : 2;
@@ -256,14 +252,14 @@ function RosterBar({ bowlers, activeId, onAdd, onRemove }) {
 
 export default function ControlLane() {
   const { laneId } = useParams();
-  const { lane, running, actions } = useLaneFeed(laneId);
+  const { lane, actions } = useLaneFeed(laneId);
   const [editing, setEditing] = useState(null); // { bowlerId, frameIdx }
 
-  const activeBowler = useMemo(() => computeUp(lane.bowlers), [lane.bowlers]);
-  const allComplete = useMemo(
-    () => lane.bowlers.length > 0 && lane.bowlers.every((b) => gameComplete(b.frames)),
-    [lane.bowlers]
+  const activeBowler = useMemo(
+    () => lane.bowlers.find((b) => b.id === lane.currentBowlerId) ?? null,
+    [lane.bowlers, lane.currentBowlerId]
   );
+  const allComplete = lane.machineState === "GAME_COMPLETE";
   const topScore = useMemo(
     () => (allComplete ? Math.max(...lane.bowlers.map((b) => currentTotal(b.frames))) : null),
     [allComplete, lane.bowlers]
@@ -288,13 +284,17 @@ export default function ControlLane() {
           <div style={{ fontSize: 12, letterSpacing: 3, textTransform: "uppercase", color: T.muted, fontWeight: 600 }}>OpenLane Scheduler</div>
           <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: 1, color: T.text }}>Lane {String(laneId).padStart(2, "0")}</div>
         </div>
-        <button onClick={() => actions.setPinsetterRunning(!running)} style={{
-          display: "flex", alignItems: "center", gap: 9, padding: "9px 16px", border: "none", cursor: "pointer",
-          color: T.text, fontSize: 13, fontWeight: 700, ...(running ? recessed(12) : raised(12)),
+        <div style={{
+          display: "flex", alignItems: "center", gap: 9, padding: "9px 16px",
+          color: T.text, fontSize: 13, fontWeight: 700, ...recessed(12),
         }}>
-          <span style={{ width: 9, height: 9, borderRadius: "50%", background: running ? T.yellow : T.muted, boxShadow: running ? `0 0 8px ${T.yellow}` : "none" }} />
-          {running ? "Pinsetter live" : "Pinsetter paused"}
-        </button>
+          <span style={{
+            width: 9, height: 9, borderRadius: "50%",
+            background: lane.connected ? T.yellow : T.muted,
+            boxShadow: lane.connected ? `0 0 8px ${T.yellow}` : "none",
+          }} />
+          {lane.connected ? "Connected" : "Reconnecting…"}
+        </div>
       </div>
 
       <RosterBar bowlers={lane.bowlers} activeId={activeBowler?.id} onAdd={actions.addBowler} onRemove={actions.removeBowler} />

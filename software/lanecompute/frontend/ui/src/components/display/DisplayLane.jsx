@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ballGlyph, computeUp, currentTotal, gameComplete, nextThrow, scoreGame } from "../../lib/scoring.js";
+import { ballGlyph, currentTotal, gameComplete, nextThrow } from "../../lib/scoring.js";
 import { MIN_COMPONENT_VH, ThemeProvider, useTheme } from "../../lib/themes.js";
 import { Clock, LivePill } from "../shared/Chrome.jsx";
 import Ticker from "./Ticker.jsx";
@@ -20,9 +20,9 @@ const MAX_BOWLER_SHEET_VH = 20;
    can ever be shown at once is a fixed number too, not something to
    measure at runtime. 6 is comfortably provable at the 10-20vh sizing
    against the rest of this screen's fixed chrome (topbar + ticker +
-   below-scores slot); a lane roster can hold up to 12 (see MAX_BOWLERS in
-   scoring/useLaneFeed), so anything beyond 6 queues rather than shrinking
-   sheets further or being cut off. */
+   below-scores slot); a lane roster can hold up to 12 (see the cap in
+   ControlLane.jsx's RosterBar), so anything beyond 6 queues rather than
+   shrinking sheets further or being cut off. */
 const MAX_VISIBLE_BOWLERS = 6;
 
 /* How long the display waits, after a bowler's turn actually ends (their
@@ -31,8 +31,6 @@ const MAX_VISIBLE_BOWLERS = 6;
    frame and let a celebration animation play out, per the product call. */
 const REORDER_DELAY_MS = 3000;
 const REORDER_ANIM_MS = 500;
-
-function pct(a, b) { return b > 0 ? Math.round((a / b) * 100) : 0; }
 
 function ballColor(sym, T) {
   if (sym === "X") return T.red;
@@ -51,10 +49,11 @@ function ballColor(sym, T) {
 function laneFrameIndex(bowlers) {
   const playing = bowlers.filter((b) => !gameComplete(b.frames));
   if (playing.length === 0) return null;
-  let min = 9;
+  const lastFrameIdx = playing[0].frames.length - 1;
+  let min = lastFrameIdx;
   for (const b of playing) {
     const nt = nextThrow(b.frames);
-    const f = nt ? nt.frame : 9;
+    const f = nt ? nt.frame : lastFrameIdx;
     if (f < min) min = f;
   }
   return min;
@@ -81,10 +80,9 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
   const { T, elevation } = useTheme();
   const card = elevation("card");
   const inset = elevation("inset");
-  const scored = scoreGame(bowler.frames);
   const total = currentTotal(bowler.frames);
   let activeFrame = -1;
-  for (let i = 0; i < 10; i++) if ((bowler.frames[i] || []).length > 0) activeFrame = i;
+  for (let i = 0; i < bowler.frames.length; i++) if (bowler.frames[i].balls.length > 0) activeFrame = i;
   // Which exact ball is about to be thrown — only meaningful for the
   // bowler actually up right now.
   const upNext = isUp ? nextThrow(bowler.frames) : null;
@@ -127,10 +125,10 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
         opacity: isUp ? 1 : 0.5, transition: "opacity 0.5s",
       }}>
         {bowler.frames.map((fr, fi) => {
-          const isTenth = fi === 9;
+          const isTenth = fi === bowler.frames.length - 1;
           const boxes = isTenth ? 3 : 2;
           const isActive = fi === activeFrame;
-          const isEmpty = fr.length === 0;
+          const isEmpty = fr.balls.length === 0;
           return (
             <div key={fi} style={{
               flex: isTenth ? "1.4" : "1", display: "flex", flexDirection: "column",
@@ -140,7 +138,7 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
             }}>
               <div style={{ flex: 1, display: "flex" }}>
                 {Array.from({ length: boxes }).map((_, bi) => {
-                  const glyph = ballGlyph(fr, bi, isTenth);
+                  const glyph = ballGlyph(fr.balls, bi, isTenth);
                   const isNextBall = upNext && upNext.frame === fi && upNext.ball === bi;
                   return (
                     <div key={bi} style={{
@@ -158,9 +156,9 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
               <div style={{
                 flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
                 fontFamily: T.fontDisplay, fontSize: "clamp(18px,30cqh,56px)", fontWeight: 600,
-                color: scored[fi].running != null ? T.text : T.dim,
-                background: scored[fi].running != null ? T.raised : "transparent",
-              }}>{scored[fi].running ?? ""}</div>
+                color: fr.runningTotal != null ? T.text : T.dim,
+                background: fr.runningTotal != null ? T.raised : "transparent",
+              }}>{fr.runningTotal ?? ""}</div>
             </div>
           );
         })}
@@ -395,26 +393,23 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
   // import) as part of its visual identity; an explicit prop still wins,
   // so a venue can override just the clips without forking the theme.
   const resolvedCelebrationAssets = celebrationAssets ?? assets.celebrationAssets;
-  const up = computeUp(lane.bowlers);
-  const allComplete = lane.bowlers.length > 0 && lane.bowlers.every((b) => gameComplete(b.frames));
+  const up = lane.bowlers.find((b) => b.id === lane.currentBowlerId) ?? null;
+  const allComplete = lane.machineState === "GAME_COMPLETE";
   // Whether a celebration clip is actually playing right now — the
   // bowler queue's turn-change reorder waits for this in addition to its
   // own delay floor, rather than assuming a fixed animation length.
   const [celebrating, setCelebrating] = useState(false);
 
-  const sr = pct(lane.strikes, lane.deliveries);
-
-  const badge = lane.alert
-    ? { label: "JAM", color: "#f07060", bg: "rgba(224,64,48,0.18)", border: "rgba(224,64,48,0.4)" }
+  const badge = !lane.connected
+    ? { label: "OFFLINE", color: "#f07060", bg: "rgba(224,64,48,0.18)", border: "rgba(224,64,48,0.4)" }
     : lane.bowlers.length === 0
     ? { label: "OPEN", color: T.muted, bg: "rgba(0,0,0,0.4)", border: T.dim }
     : { label: "ACTIVE", color: "#60a0e0", bg: "rgba(64,144,216,0.12)", border: "rgba(64,144,216,0.3)" };
 
-  const tickerItems = [
-    { id: "strike-rate", text: `Lane ${laneId} strike rate ${sr}%`, color: "accent" },
-    { id: "pins-tonight", text: `${lane.nightlyPins.toLocaleString()} pins tonight` },
-    ...tickerMessages,
-  ];
+  // Lane-wide session stats (strike rate, nightly pinfall) aren't tracked
+  // by the backend yet -- built-in ticker items dropped until they are;
+  // the ticker still shows whatever tickerMessages the caller passes in.
+  const tickerItems = tickerMessages;
 
   return (
     <>
@@ -512,20 +507,21 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
 /**
  * DisplayLane — the 16:9 overhead-monitor screen for a single lane.
  * Pure presentational component: all state comes in via props, so it can
- * be driven by the dummy data hooks today or a real compute-node feed
- * later without any change here. See DisplayLanePage for the route-level
- * wiring (useParams + data hooks + ThemeProvider).
+ * be driven by hand-authored data (see API.md §4) or the real compute-node
+ * feed (useLaneFeed) without any change here. See DisplayLanePage for the
+ * route-level wiring (useParams + data hooks + ThemeProvider).
  *
  * Props:
  *   laneId: string | number
  *   lane: {
- *     bowlers, pins, flashPins, ballSpeed, alert, lastEvent, events,
- *     nightlyPins, strikes, deliveries, stops, jams
- *   }                                            — see useLaneFeed's shape
+ *     bowlers, gameType, machineState, currentBowlerId, ballSpeed,
+ *     connected, events
+ *   }                                            — see useLaneFeed's shape / API.md §3.2
  *   theme?: string | object | { preset, overrides } — see lib/themes.js
  *   activeTakeover?: { id, kind, ...payload } | null — see TakeoverLayer
- *   tickerMessages?: { id, text, color? }[]      — extra banner items,
- *     merged with the built-in lane-stat ticker items
+ *   tickerMessages?: { id, text, color? }[]      — banner items (no
+ *     built-in lane-stat items are merged in anymore -- the backend
+ *     doesn't track session stats like strike rate/nightly pinfall)
  *   tickerEnabled?: boolean                       — default false; the
  *     ticker (bottom of screen) renders nothing and claims no layout
  *     space unless explicitly turned on

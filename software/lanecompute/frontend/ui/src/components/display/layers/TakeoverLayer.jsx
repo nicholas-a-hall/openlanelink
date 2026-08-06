@@ -1,42 +1,11 @@
 import { useTheme } from "../../../lib/themes.js";
 import ScoreBug from "../ScoreBug.jsx";
 
-function pct(a, b) { return b > 0 ? Math.round((a / b) * 100) : 0; }
-
-function StatsSlide({ lane, laneId }) {
-  const { T } = useTheme();
-  const sr = pct(lane.strikes, lane.deliveries);
-  const stopr = pct(lane.stops, lane.deliveries);
-  const items = [
-    { label: "PINS TONIGHT", value: lane.nightlyPins.toLocaleString(), color: T.red },
-    { label: "STRIKE RATE", value: `${sr}%`, color: T.green },
-    { label: "STOP RATE", value: `${stopr}%`, color: T.blue },
-    { label: "DELIVERIES", value: lane.deliveries, color: T.text },
-    { label: "JAMS", value: lane.jams, color: T.yellow },
-  ];
-  return (
-    <div style={{
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      height: "100%", gap: "3vh",
-    }}>
-      <div style={{ fontFamily: T.fontMono, fontSize: "clamp(10px,1.6vmin,20px)", color: T.muted, letterSpacing: "0.2em" }}>
-        LANE {laneId} · TONIGHT
-      </div>
-      <div style={{ display: "flex", gap: "3vw", flexWrap: "wrap", justifyContent: "center" }}>
-        {items.map((it) => (
-          <div key={it.label} style={{ textAlign: "center" }}>
-            <div style={{ fontFamily: T.fontDisplay, fontSize: "clamp(30px,7vmin,90px)", fontWeight: 700, color: it.color, textShadow: `0 0 24px ${it.color}55` }}>
-              {it.value}
-            </div>
-            <div style={{ fontFamily: T.fontMono, fontSize: "clamp(8px,1vmin,13px)", color: T.muted, letterSpacing: "0.14em", marginTop: 6 }}>
-              {it.label}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+// A "stats" takeover kind (lane-wide strike rate / nightly pinfall / jam
+// count) existed here when this was all mock data. Removed: the backend
+// doesn't track lane-session stats like this at all (state_machine/game_state.py
+// is per-game, not per-night), so there's nothing real to render. Bring
+// it back if/when that data actually exists server-side.
 
 function AdSlide({ item }) {
   return (
@@ -70,24 +39,23 @@ function MessageSlide({ item }) {
   );
 }
 
-const RENDERERS = { ad: AdSlide, video: VideoSlide, stats: StatsSlide, message: MessageSlide };
+const RENDERERS = { ad: AdSlide, video: VideoSlide, message: MessageSlide };
 
 /**
  * TakeoverLayer — renders whatever `activeTakeover` an external feed hands
  * down. This component has no scheduling logic of its own (per the product
- * decision: ads/stats/video/message takeovers are externally triggered) —
- * it's a pure function of the `activeTakeover` prop, so swapping the mock
+ * decision: ad/video/message takeovers are externally triggered) — it's a
+ * pure function of the `activeTakeover` prop, so swapping the mock
  * takeover feed for a real one from the compute node requires no changes
  * here.
  *
  * Props:
  *   activeTakeover: {
- *     id, kind: 'ad'|'video'|'stats'|'message',
+ *     id, kind: 'ad'|'video'|'message',
  *     scoreBug?: boolean,   // override the kind-based default
  *     ...kind-specific payload (imageUrl / videoUrl / title+subtitle)
  *   } | null
- *   lane, laneId, activeBowlerId — passed through to the built-in stats
- *     slide and the persistent ScoreBug.
+ *   lane, laneId, activeBowlerId — passed through to the persistent ScoreBug.
  */
 export default function TakeoverLayer({ activeTakeover, lane, laneId, activeBowlerId }) {
   const { T } = useTheme();
@@ -96,9 +64,7 @@ export default function TakeoverLayer({ activeTakeover, lane, laneId, activeBowl
   const Renderer = RENDERERS[activeTakeover.kind];
   if (!Renderer) return null;
 
-  // stats takeovers fully replace the screen; ad/video/message keep a
-  // persistent score bug so scores are never fully hidden by sponsor content
-  const showScoreBug = activeTakeover.scoreBug ?? activeTakeover.kind !== "stats";
+  const showScoreBug = activeTakeover.scoreBug ?? true;
 
   return (
     <div style={{

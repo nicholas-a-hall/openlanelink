@@ -1,38 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  applyBall, computeUp, currentTotal, emptyGame, gameComplete,
-  isStrike, mkBowler, nextThrow, STRIKE,
-} from "./scoring.js";
 
 /* ═══════════════════════════════════════════════════════════════════
-   DUMMY BACKEND STAND-IN
+   REAL COMPUTE-NODE CONNECTION
 
-   This hook is the ONLY place that fakes data. Its return shape —
-   { lane, actions } — is meant to be exactly what a real connection to
-   the compute node's per-lane WebSocket will eventually provide:
-   `lane` is the live game-state snapshot, `actions` are the same verbs
-   a tablet sends upstream (addBowler / removeBowler / correctBall /
-   setPinsetterRunning). Swapping the simulated interval below for a
-   real `ws.onmessage` + `ws.send(...)` should not require touching any
-   component that consumes this hook.
+   Was a dummy backend stand-in (see HANDOFF.md's history) -- now a real
+   WebSocket subscription to the compute node's per-lane feed
+   (state_machine/api.py's /ws/display/{lane}, read-only) plus REST calls for
+   every mutating action, matching that service's actual design: WS never
+   carries commands, only state/event broadcasts. Return shape is still
+   { lane, running, actions } so consuming components don't need to
+   change -- see API.md for the exact wire shapes this now produces/sends.
+
+   Auto-restarts a new game a few seconds after the lane reaches
+   GAME_COMPLETE (product decision -- see PR discussion). `running` no
+   longer means anything server-side (there's no "pause accepting
+   pinsetter events" endpoint) and setPinsetterRunning is gone; the old
+   toggle was a pure simulator artifact.
    ═══════════════════════════════════════════════════════════════════ */
 
-const rand = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const DEFAULT_API_PORT = 8000;
+const RECONNECT_DELAY_MS = 3000;
+const NEW_GAME_DELAY_MS = 4000; // matches the old simulator's pacing
+const ROSTER_SETTLE_MS = 800; // debounce so back-to-back bowler adds don't double-start a game
+const MAX_EVENTS = 6;
 
-const NAMES = [
-  "Alex", "Jordan", "Sam", "Casey", "Morgan", "Riley", "Quinn", "Taylor",
-  "Drew", "Avery", "Reese", "Blake", "Dana", "Emery", "Parker", "Skyler",
-];
-const BOWLERS_PER_LANE = 6;
+function apiBase() {
+  if (import.meta.env.VITE_BACKEND_URL) return import.meta.env.VITE_BACKEND_URL;
+  return `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`;
+}
 
-function randomBowlerNames(count) {
-  const pool = [...NAMES];
-  const picked = [];
-  for (let i = 0; i < count && pool.length > 0; i++) {
-    const idx = Math.floor(Math.random() * pool.length);
-    picked.push(pool.splice(idx, 1)[0]);
-  }
-  return picked;
+function wsUrl(laneId) {
+  return `${apiBase().replace(/^http/, "ws")}/ws/display/${laneId}`;
 }
 
 function fmtTime() {
@@ -40,198 +38,190 @@ function fmtTime() {
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-function fullDeck() {
-  return Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i + 1, 1]));
+async function apiCall(laneId, path, options) {
+  const res = await fetch(`${apiBase()}/api/lanes/${laneId}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `${res.status} ${res.statusText}`);
+  }
+  return res.status === 204 ? null : res.json();
 }
 
-/* Recreational-league-ish bowlers, not pros: modest strike/spare rates and
-   a real chance of an outright gutter ball on either delivery, with the
-   rest skewed toward middling pin counts rather than clearing the rack.
-   `standing` is how many pins are still up; pass `10` for a fresh frame's
-   first ball. Previously this reused the same `r` draw for both the
-   strike check and the pin count, which happened to make a first-ball
-   gutter (0-2 pins) mathematically impossible — fixed here along with the
-   skill-level rebalance. */
-function simulateBallPins(standing, isFirstBall) {
-  const clearChance = isFirstBall ? 0.10 : 0.22; // strike, or spare
-  const gutterChance = isFirstBall ? 0.16 : 0.14;
-  const r = Math.random();
-  if (r < clearChance) return standing;
-  if (r < clearChance + gutterChance) return 0;
-  // everything else: skewed toward the low-middle of what's left standing
-  const skew = Math.pow(Math.random(), 1.7);
-  const range = Math.max(standing - 1, 1);
-  return Math.max(1, Math.min(standing - 1, Math.floor(skew * range) + 1));
-}
-
-function initialLane(laneId) {
+function emptyLane(laneId) {
   return {
     laneId,
-    maintenance: false,
-    bowlers: randomBowlerNames(BOWLERS_PER_LANE).map(mkBowler),
-    pins: fullDeck(),
-    flashPins: [],
-    ballSpeed: rand(9, 16),
-    alert: null,
-    lastEvent: "",
-    events: [{ ts: fmtTime(), type: "sys", msg: "lane online" }],
-    nightlyPins: 0,
-    strikes: 0,
-    deliveries: 0,
-    stops: 0,
-    jams: 0,
+    bowlers: [],
+    gameType: null,
+    machineState: "IDLE",
+    currentBowlerId: null,
+    ballSpeed: null,
+    connected: false,
+    events: [{ ts: fmtTime(), type: "sys", msg: "connecting…" }],
   };
 }
 
-export function useLaneFeed(laneId) {
-  const [lane, setLane] = useState(() => initialLane(laneId));
-  const [running, setRunning] = useState(true);
-  const laneIdRef = useRef(laneId);
-
-  // Re-seed when the route's laneId changes (e.g. dev nav between lanes).
-  useEffect(() => {
-    if (laneIdRef.current !== laneId) {
-      laneIdRef.current = laneId;
-      setLane(initialLane(laneId));
-    }
-  }, [laneId]);
-
-  const addLog = useCallback((type, msg) => {
-    setLane((prev) => ({
-      ...prev,
-      events: [{ ts: fmtTime(), type, msg }, ...prev.events].slice(0, 6),
-    }));
-  }, []);
-
-  /* ── simulated delivery: stands in for a real pinsetter/gateway event ── */
-  const tick = useCallback(() => {
-    setLane((prev) => {
-      const up = computeUp(prev.bowlers);
-      if (!up || prev.maintenance) return prev;
-      const nt = nextThrow(up.frames);
-      if (!nt) return prev;
-
-      const frame = up.frames[nt.frame] || [];
-      let standing = 10;
-      if (nt.ball > 0 && nt.frame < 9) {
-        const first = frame[0];
-        if (first != null && first !== STRIKE) standing = 10 - first;
-      }
-      const pins = simulateBallPins(standing, nt.ball === 0);
-
-      const newFrames = applyBall(up.frames, nt.frame, nt.ball, pins);
-      const newBowlers = prev.bowlers.map((b) => (b.id === up.id ? { ...b, frames: newFrames } : b));
-
-      // visual pin-deck knockdown for this delivery
-      const deckBefore = nt.ball === 0 ? fullDeck() : prev.pins;
-      const upPins = Object.keys(deckBefore).map(Number).filter((p) => deckBefore[p] === 1);
-      const toKnock = upPins.sort(() => Math.random() - 0.5).slice(0, pins);
-      const newDeck = { ...deckBefore };
-      toKnock.forEach((p) => { newDeck[p] = 0; });
-
-      // did this ball close the frame? -> deck resets full for the next delivery
-      const after = nextThrow(newFrames);
-      const frameClosed = !after || after.frame !== nt.frame;
-      const finalDeck = frameClosed ? fullDeck() : newDeck;
-
-      const isTrueStrike = nt.ball === 0 && pins === 10;
-      const isGutter = pins === 0;
-
-      let msg;
-      if (isTrueStrike) msg = "STRIKE — all 10 cleared";
-      else if (isGutter) msg = "gutter ball — no pins down";
-      else msg = `delivery — ${pins} pin${pins === 1 ? "" : "s"} down`;
-
-      const nextEvents = [
-        { ts: fmtTime(), lane: laneId, type: isTrueStrike ? "strike" : "", msg },
-        ...prev.events,
-      ].slice(0, 6);
-
-      return {
-        ...prev,
-        bowlers: newBowlers,
-        pins: finalDeck,
-        flashPins: toKnock,
-        lastEvent: isTrueStrike ? "strike" : "",
-        ballSpeed: rand(9, 16),
-        deliveries: prev.deliveries + 1,
-        strikes: prev.strikes + (isTrueStrike ? 1 : 0),
-        stops: prev.stops + (isGutter ? 1 : 0),
-        nightlyPins: prev.nightlyPins + pins,
-        events: nextEvents,
-      };
-    });
-
-    // clear the flash after a beat
-    setTimeout(() => {
-      setLane((prev) => ({ ...prev, flashPins: [] }));
-    }, 450);
-  }, [laneId]);
-
-  /* ── occasional pinsetter jam, independent of delivery cadence ── */
-  const maybeJam = useCallback(() => {
-    if (Math.random() > 0.08) return;
-    setLane((prev) => ({ ...prev, alert: "jam", jams: prev.jams + 1 }));
-    addLog("alert", "pinsetter jam");
-    setTimeout(() => {
-      setLane((prev) => ({ ...prev, alert: null, pins: fullDeck() }));
-      addLog("sys", "jam cleared");
-    }, 3500);
-  }, [addLog]);
-
-  useEffect(() => {
-    if (!running) return;
-    const evInt = setInterval(tick, rand(3000, 4600));
-    const jamInt = setInterval(maybeJam, 9000);
-    return () => { clearInterval(evInt); clearInterval(jamInt); };
-  }, [running, tick, maybeJam]);
-
-  /* ── auto-restart the game once every bowler has finished ── */
-  useEffect(() => {
-    const allDone = lane.bowlers.length > 0 && lane.bowlers.every((b) => gameComplete(b.frames));
-    if (!allDone) return;
-    const t = setTimeout(() => {
-      setLane((prev) => ({
-        ...prev,
-        bowlers: prev.bowlers.map((b) => ({ ...b, frames: emptyGame() })),
-      }));
-      addLog("sys", "game complete — new game starting");
-    }, 4000);
-    return () => clearTimeout(t);
-  }, [lane.bowlers, addLog]);
-
-  /* ── actions: same shape a tablet will send upstream to the compute node ── */
-  const addBowler = useCallback((name) => {
-    setLane((prev) => (prev.bowlers.length >= 12 ? prev : { ...prev, bowlers: [...prev.bowlers, mkBowler(name)] }));
-  }, []);
-
-  const removeBowler = useCallback((id) => {
-    setLane((prev) => ({ ...prev, bowlers: prev.bowlers.filter((b) => b.id !== id) }));
-  }, []);
-
-  const correctBall = useCallback((bowlerId, frameIdx, ballIdx, pins) => {
-    setLane((prev) => ({
-      ...prev,
-      bowlers: prev.bowlers.map((b) =>
-        b.id === bowlerId ? { ...b, frames: applyBall(b.frames, frameIdx, ballIdx, pins) } : b
-      ),
-    }));
-  }, []);
-
-  const setPinsetterRunning = useCallback((v) => setRunning(v), []);
-
-  // Memoized so `actions` has a stable identity across renders — every
-  // individual action fn is already useCallback'd, but the wrapping
-  // object literal was being recreated every render (lane state ticks
-  // every few seconds), which breaks any consumer that puts `actions` in
-  // a dependency array (found this while testing: a one-shot effect with
-  // `[actions]` never survived long enough to fire).
-  const actions = useMemo(
-    () => ({ addBowler, removeBowler, correctBall, setPinsetterRunning }),
-    [addBowler, removeBowler, correctBall, setPinsetterRunning]
-  );
-
-  return { lane, running, actions };
+/* Flattened per-bowler ball list, used only to diff snapshots for the
+   event log (see below) -- not part of the returned `lane` shape. */
+function flatBalls(bowler) {
+  return bowler.frames.flatMap((f) => f.balls);
 }
 
-export { currentTotal, computeUp, isStrike };
+export function useLaneFeed(laneId) {
+  const [lane, setLane] = useState(() => emptyLane(laneId));
+  const wsRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
+  const newGameTimerRef = useRef(null);
+  const stopRef = useRef(false);
+  const startingGameRef = useRef(false); // guards against a duplicate POST /games race
+  const prevBallsRef = useRef(new Map()); // bowlerId -> flat balls, for delivery-diff events
+
+  const addEvent = useCallback((type, msg) => {
+    setLane((prev) => ({
+      ...prev,
+      events: [{ ts: fmtTime(), type, msg }, ...prev.events].slice(0, MAX_EVENTS),
+    }));
+  }, []);
+
+  const applySnapshot = useCallback((data) => {
+    // Diff against the previous snapshot to synthesize a delivery/strike
+    // event -- the backend doesn't broadcast a distinct "event" for every
+    // ball (only for ball_speed, pinsetter commands, assistance), so this
+    // is the client's own signal for "something just happened" driving
+    // EventLog/CelebrationLayer. Purely cosmetic derivation; scoring
+    // itself never depends on it.
+    const prevBalls = prevBallsRef.current;
+    const nextBalls = new Map();
+    for (const b of data.bowlers) {
+      const balls = flatBalls(b);
+      nextBalls.set(b.id, balls);
+      const prev = prevBalls.get(b.id) || [];
+      if (balls.length > prev.length) {
+        const newest = balls[balls.length - 1];
+        addEvent(
+          newest === 10 ? "strike" : "",
+          newest === 10 ? `${b.name} — STRIKE` : `${b.name} — ${newest} pin${newest === 1 ? "" : "s"} down`
+        );
+      }
+    }
+    prevBallsRef.current = nextBalls;
+
+    setLane((prev) => ({
+      ...prev,
+      bowlers: data.bowlers,
+      gameType: data.game?.gameType ?? null,
+      machineState: data.machineState,
+      currentBowlerId: data.currentBowlerId,
+      connected: true,
+    }));
+  }, [addEvent]);
+
+  const connect = useCallback(() => {
+    if (stopRef.current) return;
+    const ws = new WebSocket(wsUrl(laneId));
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setLane((prev) => ({ ...prev, connected: true }));
+    };
+
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === "state") {
+        applySnapshot(msg.data);
+      } else if (msg.type === "event" && msg.event === "ball_speed") {
+        setLane((prev) => ({ ...prev, ballSpeed: msg.data.mph }));
+      } else if (msg.type === "event" && msg.event === "assistance_requested") {
+        addEvent("alert", "assistance requested");
+      }
+    };
+
+    ws.onclose = () => {
+      if (wsRef.current !== ws) return; // superseded by a newer connection
+      setLane((prev) => ({ ...prev, connected: false }));
+      if (stopRef.current) return;
+      addEvent("sys", "connection lost — retrying…");
+      reconnectTimerRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+    };
+
+    ws.onerror = () => ws.close();
+  }, [laneId, applySnapshot, addEvent]);
+
+  useEffect(() => {
+    stopRef.current = false;
+    prevBallsRef.current = new Map();
+    setLane(emptyLane(laneId));
+    connect();
+    return () => {
+      stopRef.current = true;
+      clearTimeout(reconnectTimerRef.current);
+      clearTimeout(newGameTimerRef.current);
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId]);
+
+  // ── start a game automatically: a short debounce after bowlers first
+  // exist on an otherwise-idle lane, or a few seconds after GAME_COMPLETE
+  // so the final score has a moment to be visible first. A fresh lane sits
+  // in IDLE until POST /games is called -- nothing else starts one.
+  //
+  // The IDLE case MUST be debounced, not fired immediately: adding two
+  // bowlers back-to-back broadcasts two separate state updates (bowlers
+  // still empty->1, then 1->2), each re-running this effect. The first
+  // POST /games often resolves (clearing startingGameRef's concurrency
+  // guard) before the second bowler's broadcast even arrives, so a naive
+  // immediate call fires twice -- the second add_game() snapshots
+  // game.bowler_ids from whoever's in the roster *at that instant*, which
+  // can be just the first bowler, permanently excluding the second from
+  // that game's turn rotation (game_state.py's add_bowler/remove_bowler
+  // now also keep an already-started game's bowler_ids in sync for the
+  // same reason, but there's still no reason to double-call this). ──
+  useEffect(() => {
+    clearTimeout(newGameTimerRef.current);
+    const startGame = () => {
+      if (startingGameRef.current) return;
+      startingGameRef.current = true;
+      apiCall(laneId, "/games", { method: "POST", body: JSON.stringify({}) })
+        .catch((e) => addEvent("sys", `couldn't start game: ${e.message}`))
+        .finally(() => { startingGameRef.current = false; });
+    };
+
+    if (lane.machineState === "GAME_COMPLETE") {
+      newGameTimerRef.current = setTimeout(startGame, NEW_GAME_DELAY_MS);
+    } else if (lane.machineState === "IDLE" && lane.bowlers.length > 0) {
+      newGameTimerRef.current = setTimeout(startGame, ROSTER_SETTLE_MS);
+    }
+    return () => clearTimeout(newGameTimerRef.current);
+  }, [lane.machineState, lane.bowlers.length, laneId, addEvent]);
+
+  // ── actions: REST calls to the compute node ──
+  const addBowler = useCallback((name) => {
+    apiCall(laneId, "/bowlers", { method: "POST", body: JSON.stringify({ name }) })
+      .catch((e) => addEvent("sys", `couldn't add bowler: ${e.message}`));
+  }, [laneId, addEvent]);
+
+  const removeBowler = useCallback((id) => {
+    apiCall(laneId, `/bowlers/${id}`, { method: "DELETE" })
+      .catch((e) => addEvent("sys", `couldn't remove bowler: ${e.message}`));
+  }, [laneId, addEvent]);
+
+  // Kept 0-indexed (frameIdx, ballIdx) at the call site -- matches how
+  // CorrectionModal already addresses frames/balls -- and translated to
+  // the backend's 1-indexed (frame_number, ball_in_frame) here, the one
+  // place that needs to know about that difference.
+  const correctBall = useCallback((bowlerId, frameIdx, ballIdx, pins) => {
+    apiCall(laneId, `/bowlers/${bowlerId}/score`, {
+      method: "PUT",
+      body: JSON.stringify({ frame_number: frameIdx + 1, ball_in_frame: ballIdx + 1, pinfall: pins }),
+    }).catch((e) => addEvent("sys", `couldn't correct score: ${e.message}`));
+  }, [laneId, addEvent]);
+
+  const actions = useMemo(() => ({ addBowler, removeBowler, correctBall }), [addBowler, removeBowler, correctBall]);
+
+  return { lane, actions };
+}

@@ -221,60 +221,60 @@ only way to change it (see [§2.4](#24-presets-and-overrides-theme-prop)).
 
 ## 3. Data model — the real backend's contract
 
-This is the part that matters for backend design. `useLaneFeed.js` and
-`useTakeoverFeed.js` are the **only** two files that currently fake this
-data (see `HANDOFF.md`) — everything below is what they produce today,
-which is meant to be exactly what a real per-lane connection to the
-compute node should provide.
+`useLaneFeed.js` connects for real to the compute node (`software/lanecompute/backend/scoring`,
+see `../../HANDOFF.md`/`README.md` there) — it is **not** mock data anymore.
+`useTakeoverFeed.js` is still a mock (see its own docstring): the compute
+node has no ad-scheduling backend, only game state.
 
 ### 3.1 `Bowler`
 
 ```ts
 {
-  id: number,           // stable per-bowler identity (see note below)
+  id: string,            // backend-assigned, stable, durable (see note below)
   name: string,
-  frames: Frame[10],    // see 3.2 — always exactly 10 elements
+  frames: Frame[],        // see 3.2 — length is gt.frameCount, 10 for every
+                           // game type today (ten-pin/no-tap/duckpin)
 }
 ```
 
-**Frame format is the one thing to get exactly right.** Each `Frame` is
-an array of *raw pin counts*, one entry per ball actually thrown — never
-a running total, never a display glyph. Length varies:
+**Frame format changed from this doc's original (pre-backend) design.**
+It used to be a raw array of pin counts, with running totals/completion
+derived client-side. That's gone: scoring is backend-authoritative now
+(`state_machine/game_state.py`) and multi-game-type (ten-pin/no-tap/duckpin, see
+`state_machine/game_types.py`) — no-tap's relaxed strike threshold and duckpin's
+"3rd-ball clear scores flat, no bonus" rule are real scoring-rule
+differences a client-side reimplementation would have to duplicate exactly
+right to avoid disagreeing with the server. `lib/scoring.js` only derives
+presentational values now (ball glyphs, extended stats) from data the
+backend already computed — see that file's own docstring.
 
-| Situation | Frame value | Notes |
-|---|---|---|
-| Not bowled yet | `[]` | |
-| Frame 1-9, open frame (no strike/spare) | `[a, b]` | e.g. `[4, 2]` |
-| Frame 1-9, strike | `[10]` | **length 1**, not `[10, 0]` |
-| Frame 1-9, spare | `[a, b]` where `a+b===10` | e.g. `[7, 3]` |
-| Frame 1-9, mid-frame (ball 1 thrown, ball 2 not yet) | `[a]` where `a !== 10` | distinguishes from a strike only by value |
-| Frame 10, open | `[a, b]` | no bonus ball |
-| Frame 10, one strike then open | `[10, a, b]` | 3 balls total |
-| Frame 10, spare then bonus | `[a, b, c]` where `a+b===10` | 3 balls total |
-| Frame 10, three strikes | `[10, 10, 10]` | |
+Each `Frame`, straight from `state_machine/game_state.py`'s `score_game()`:
 
-Running scores, ball glyphs ("X"/"/"/"-"), "whose turn is it", and
-extended stats (pinfall, strike count, spare count — used by
-`BowlerStatsPanel`) are all **derived** from this array via
-`lib/scoring.js` (`scoreGame`, `ballGlyph`, `computeUp`, `nextThrow`,
-`gameComplete`, `countStrikes`, `countSpares`, `pinfall`) — never compute
-or transmit any of these separately, or the two screens (and any new
-component added later) can disagree. `applyBall` is the single mutation
-path (immutable — returns new frames). **This is the standardized data
-model in practice**: `frames` is the only thing that's ever real state;
-everything else about a bowler's game is a pure function of it, defined
-exactly once. If a future component needs a number that isn't already
-derivable, add the derivation to `scoring.js` — don't compute it locally
-in the component and don't add it as a separately-tracked field on
-`Bowler`.
+```ts
+{
+  frame: number,          // 1-indexed
+  balls: number[],        // raw pin counts actually thrown this frame, e.g. [10], [4,2], []
+  complete: boolean,      // this frame's score is fully resolved (waited out any bonus balls)
+  turnOver: boolean,      // this frame is done taking balls -- NOT the same as `complete` for a
+                           // strike/spare, whose score stays unresolved until bonus balls land
+                           // from later frames; turnOver is what "whose turn is it" logic uses
+  frameScore: number | null,   // this frame's own score, null until `complete`
+  runningTotal: number | null, // cumulative through this frame, null until `complete`
+}
+```
 
-**Bowler `id` stability**: the current mock (`mkBowler`) assigns ids from
-a client-side incrementing counter reset on every page load. A real
-backend must assign **stable, durable ids** (won't collide across lanes,
-survive a reconnect) since ids are used as React keys driving the
-bowler-queue's animation identity (`HANDOFF.md` §"the bowler queue") —
-an id that changes across a reconnect would look like every bowler
-leaving and a new set joining.
+`lib/scoring.js` derives from this array: `ballGlyph` (glyph per ball),
+`currentTotal` (most recent resolved `runningTotal`), `gameComplete`
+(last frame's `complete`), `nextThrow` (first frame with `turnOver:
+false`, and how many balls are in it), `countStrikes`/`countSpares`/
+`pinfall` (used by `BowlerStatsPanel`). If a future component needs a
+number that isn't already derivable, add the derivation there — don't
+compute it locally in the component.
+
+**Bowler `id` stability**: backend-assigned (`game_state.py`'s
+`Bowler.id`, a short hex string), stable across a reconnect — safe to use
+as the React key driving the bowler-queue's animation identity
+(`HANDOFF.md` §"the bowler queue").
 
 ### 3.2 `Lane`
 
@@ -284,24 +284,24 @@ returns as `lane`, and what `DisplayLane`'s `lane` prop expects:
 ```ts
 {
   laneId: string | number,
-  maintenance: boolean,        // true = lane paused, no simulated deliveries
-  bowlers: Bowler[],           // roster order; see 3.1
-  pins: { [pinNumber 1-10]: 0 | 1 },  // 1 = standing. Cosmetic only —
-                                       // not currently rendered by DisplayLane
-                                       // (removed per an earlier product call),
-                                       // still tracked in state
-  flashPins: number[],         // pin numbers to flash/animate; cosmetic, same status as `pins`
-  ballSpeed: number | null,    // mph, most recent delivery
-  alert: "jam" | null,
-  lastEvent: "strike" | "",
-  events: LaneEvent[],         // newest first, capped at 6 in the mock
-  nightlyPins: number,         // lane-wide total pins knocked down tonight
-  strikes: number,             // lane-wide strike count tonight
-  deliveries: number,          // lane-wide delivery count tonight
-  stops: number,               // lane-wide gutter/foul count tonight
-  jams: number,                // lane-wide pinsetter jam count tonight
+  bowlers: Bowler[],            // roster order; see 3.1
+  gameType: string | null,      // e.g. "ten_pin" | "no_tap" | "duckpin" (state_machine/game_types.json), null before a game starts
+  machineState: string,         // state_machine/state_machine.py's State enum: "IDLE" | "READY" |
+                                 // "BALL_IN_FLIGHT" | "AWAITING_PINFALL" | "PINSETTER_BUSY" | "GAME_COMPLETE"
+  currentBowlerId: string | null,   // whose turn it is
+  ballSpeed: number | null,     // mph, most recent delivery (from a "ball_speed" WS event)
+  connected: boolean,           // is the WebSocket to the compute node currently open
+  events: LaneEvent[],          // newest first, capped at 6 -- client-synthesized (see 3.5), not from the backend directly
 }
 ```
+
+Dropped from the original (pre-backend) design, since nothing produces
+this data server-side: `maintenance`, `pins`/`flashPins` (pin-deck visuals
+— needs `vision/pinfall.py`, not implemented), `alert` (jam detection —
+`STATUS_RELAY_FAULT` exists in the mesh protocol but nothing forwards or
+acts on it yet), `nightlyPins`/`strikes`/`deliveries`/`stops`/`jams`
+(lane-wide session stats — `game_state.py` is per-game, not per-night).
+Bring any of these back once the backend actually tracks them.
 
 `LaneEvent`:
 ```ts
@@ -317,7 +317,7 @@ scorecard view.
 ```ts
 {
   id: number,                                    // unique per takeover instance
-  kind: "ad" | "video" | "stats" | "message",
+  kind: "ad" | "video" | "message",
   scoreBug?: boolean,                             // override the kind-based default (see below)
   // kind: "ad"
   imageUrl?: string, alt?: string,
@@ -325,59 +325,73 @@ scorecard view.
   videoUrl?: string, poster?: string, loop?: boolean,  // loop defaults true
   // kind: "message"
   title?: string, subtitle?: string,
-  // kind: "stats" — no extra fields; renders lane.strikes/deliveries/etc. directly
 }
 ```
 
+There used to be a `"stats"` kind (lane-wide strike rate/nightly
+pinfall/jams, fully replacing the screen). Removed along with the `Lane`
+fields it rendered — `game_state.py` is per-game, not per-night, so there
+was nothing real to show. Bring it back if that data ever exists
+server-side.
+
 Behavior rules a real scheduler must respect (already enforced by the
 mock, see `HANDOFF.md`):
-- `stats` fully replaces the screen (no persistent score display).
 - `ad` / `video` / `message` keep a persistent `ScoreBug` underneath
   (scores are never fully hidden by sponsor content) unless `scoreBug`
   explicitly overrides that.
 - **`ad`/`video` must only fire when the lane has no active game** — the
   real compute node owns this decision (see `hasActiveGame` in
-  `DisplayLanePage.jsx`, currently `bowlers.length > 0 && !everyone
-  gameComplete`). `stats`/`message` aren't gated the same way.
+  `DisplayLanePage.jsx`, currently `bowlers.length > 0 && machineState !==
+  "GAME_COMPLETE"`).
 
 ### 3.4 Actions (control tablet → backend)
 
-What `useLaneFeed` returns as `actions` — the verbs `ControlLane` calls,
-meant to map directly to messages a real tablet sends upstream:
+What `useLaneFeed` returns as `actions` — the verbs `ControlLane` calls.
+Unlike the WebSocket (3.5, read-only), these are REST calls straight to
+`state_machine/api.py`:
 
-| Action | Signature | Server should… |
+| Action | Signature | REST call |
 |---|---|---|
-| `addBowler` | `(name: string) => void` | Append a new bowler (id assigned server-side) to the lane's roster, capped at 12 |
-| `removeBowler` | `(id: number) => void` | Remove that bowler from the roster |
-| `correctBall` | `(bowlerId, frameIdx, ballIdx, pins) => void` | Apply `applyBall` semantics — overwrite one ball's pin count, immutably |
-| `setPinsetterRunning` | `(running: boolean) => void` | Pause/resume automatic delivery simulation — real equivalent: pause/resume accepting pinsetter events for this lane |
+| `addBowler` | `(name: string) => void` | `POST /api/lanes/{lane}/bowlers {name}` |
+| `removeBowler` | `(id: string) => void` | `DELETE /api/lanes/{lane}/bowlers/{id}` |
+| `correctBall` | `(bowlerId, frameIdx, ballIdx, pins) => void` | `PUT /api/lanes/{lane}/bowlers/{id}/score` — `frameIdx`/`ballIdx` stay 0-indexed at this call site (matches `CorrectionModal`'s own indexing) and are translated to the backend's 1-indexed `{frame_number, ball_in_frame, pinfall}` inside `useLaneFeed`, the one place that needs to know about the difference |
 
-### 3.5 Suggested WebSocket envelope (not yet implemented)
+`setPinsetterRunning` is gone — it paused the old simulator's fake
+delivery interval, which has no real-backend equivalent (no "pause
+accepting pinsetter events" endpoint exists, and pausing live hardware
+input isn't really a thing). `ControlLane`'s pinsetter-live toggle was
+replaced with a real WebSocket connection-status indicator (`lane.connected`)
+instead.
 
-No backend exists yet — this is a proposal for the message shape,
-sketched to make the eventual swap-in of a real socket a drop-in
-replacement for `useLaneFeed`/`useTakeoverFeed`'s internals only.
+Starting a game (`POST /api/lanes/{lane}/games`, optional
+`{game_type}`, default `"ten_pin"`) isn't exposed as a user-facing action
+at all — `useLaneFeed` calls it automatically: immediately once bowlers
+exist on an idle lane, and a few seconds after `machineState` reaches
+`GAME_COMPLETE` (product decision — no manual "next game" button today).
 
-**Server → client** (one connection per lane, or a shared connection
-multiplexed by `laneId`):
+### 3.5 WebSocket envelope (as implemented)
+
+One connection per lane: `useLaneFeed` opens `ws://…/ws/display/{laneId}`
+(`state_machine/api.py`). Read-only, matching that service's design — REST
+(3.4) is the only command path, never the socket.
+
+**Server → client** (`state_machine/api.py`'s exact message shapes):
 ```json
-{ "type": "lane_state", "laneId": "7", "state": { /* full Lane, 3.2 */ } }
-{ "type": "takeover", "laneId": "7", "takeover": { /* Takeover, 3.3 */ } }
-{ "type": "takeover", "laneId": "7", "takeover": null }
+{ "type": "state", "lane": 7, "data": { /* full Lane snapshot -- game_state.py + state_machine.py, see 3.2 minus laneId/connected/events which the client adds */ } }
+{ "type": "event", "lane": 7, "event": "ball_speed", "data": { "mph": 14.2, "intervalMs": 812 } }
+{ "type": "event", "lane": 7, "event": "assistance_requested", "data": { "reason": "..." } }
+{ "type": "event", "lane": 7, "event": "pinsetter_cycle_requested" | "pinsetter_rerack_requested", "data": {} }
 ```
 
-**Client → server** (from a control tablet):
-```json
-{ "type": "add_bowler", "laneId": "7", "name": "Jordan" }
-{ "type": "remove_bowler", "laneId": "7", "bowlerId": 481 }
-{ "type": "correct_ball", "laneId": "7", "bowlerId": 481, "frameIdx": 2, "ballIdx": 0, "pins": 7 }
-{ "type": "set_pinsetter_running", "laneId": "7", "running": false }
-```
+There is no `takeover` message type — `useTakeoverFeed` is a fully
+separate, still-mocked concern (3.3); nothing server-side schedules
+takeovers yet.
 
-Whether `lane_state` pushes full snapshots or diffs is an open
-implementation choice — the frontend only needs whatever hook replaces
-`useLaneFeed` to hand back a complete `Lane` object per render, so either
-works as long as the hook reduces diffs into full state client-side.
+`events` (3.2) isn't sent by the server as a list — the client
+synthesizes it by diffing successive `state` snapshots (new balls appear
+in a bowler's `frames`) plus reacting to `assistance_requested`, capping
+at 6 entries. This is cosmetic (`EventLog`/`CelebrationLayer` only); it's
+never a source of truth for scoring.
 
 ---
 
@@ -390,15 +404,23 @@ kinds/themes without the simulator running or randomizing on you.
 
 ```jsx
 import DisplayLane from "./components/display/DisplayLane.jsx";
-import { mkBowler, applyBall } from "./lib/scoring.js";
 
-const bowler = applyBall(mkBowler("Test").frames, 0, 0, 10); // a strike in frame 1
+// Hand-author frames in the backend's own shape (3.1) -- a strike in
+// frame 1, nothing else thrown yet. Every other frame is the "not bowled
+// yet" shape: balls: [], complete: false, turnOver: false, frameScore:
+// null, runningTotal: null.
+const emptyFrame = (n) => ({ frame: n, balls: [], complete: false, turnOver: false, frameScore: null, runningTotal: null });
+const frames = [
+  { frame: 1, balls: [10], complete: false, turnOver: true, frameScore: null, runningTotal: null },
+  ...Array.from({ length: 9 }, (_, i) => emptyFrame(i + 2)),
+];
+
 const lane = {
-  laneId: 7, maintenance: false,
-  bowlers: [{ id: 1, name: "Test", frames: bowler }],
-  pins: {}, flashPins: [], ballSpeed: 14, alert: null, lastEvent: "",
+  laneId: 7,
+  bowlers: [{ id: "b1", name: "Test", frames }],
+  gameType: "ten_pin", machineState: "READY", currentBowlerId: "b1",
+  ballSpeed: 14, connected: true,
   events: [{ ts: "12:00:00", type: "sys", msg: "lane online" }],
-  nightlyPins: 10, strikes: 1, deliveries: 1, stops: 0, jams: 0,
 };
 
 <DisplayLane laneId={7} lane={lane} theme="daylight" tickerEnabled tickerMessages={[]} />

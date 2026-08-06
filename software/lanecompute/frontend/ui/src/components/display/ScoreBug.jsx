@@ -5,9 +5,7 @@ import { useTheme } from "../../lib/themes.js";
  * ScoreBug — compact all-bowlers score strip.
  * Renders standalone in the normal score view's header, and gets reused
  * as the persistent overlay during ad/video/message takeovers (per the
- * product decision: "stats" takeovers fully replace the screen, but
- * ad/video/message takeovers keep this visible so scores are never fully
- * hidden behind sponsor content).
+ * product decision: scores are never fully hidden behind sponsor content).
  */
 export default function ScoreBug({ laneId, bowlers, activeBowlerId, floating = false }) {
   const { T, elevation } = useTheme();

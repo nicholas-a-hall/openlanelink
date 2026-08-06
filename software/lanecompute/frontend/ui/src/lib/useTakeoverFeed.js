@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
    DUMMY TAKEOVER FEED
 
    Stand-in for the compute node externally scheduling full-screen
-   ad/video/stats/message takeovers (per the product decision: the
+   ad/video/message takeovers (per the product decision: the
    display itself has no scheduling logic — it only renders whatever
    `activeTakeover` it's handed). This hook fakes that external schedule
    with a local interval. Swapping in the real feed later means rewriting
@@ -24,11 +24,12 @@ const PLACEHOLDER_AD_IMG =
     </svg>
   `);
 
+// No "stats" step -- that takeover kind was removed (see TakeoverLayer.jsx):
+// it rendered lane.strikes/deliveries/stops/jams/nightlyPins, none of which
+// the backend tracks (state_machine/game_state.py is per-game, not per-night).
 const SCRIPT = [
   { showMs: 14000 }, // score view
   { takeoverMs: 6000, kind: "message", title: "$2 SODAS ALL NIGHT", subtitle: "Ask your server at the front desk" },
-  { showMs: 14000 },
-  { takeoverMs: 6000, kind: "stats" },
   { showMs: 14000 },
   { takeoverMs: 6000, kind: "ad", imageUrl: PLACEHOLDER_AD_IMG, alt: "sponsor placeholder" },
 ];
