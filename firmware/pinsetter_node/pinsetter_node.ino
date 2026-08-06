@@ -105,11 +105,11 @@ uint8_t pulseOnlyMask = 0;
 #endif
 
 // --- WiFi (fallback only; Ethernet is preferred) ---
-const char* ssid = "SerenityHollow";
-const char* password = "LiveLaughPoop";
+const char* ssid = "";
+const char* password = "";
 
 // --- OTA ---
-const char* otaPassword = "changeme";  // set a real one
+const char* otaPassword = "";  // set a real one
 
 // --- Node identity / gateway ---
 #define NODE_ID "pinsetter-01"
