@@ -1,0 +1,17 @@
+{
+  "name": "lunar-lanes-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "socket.io": "^4.7.5",
+    "redis": "^4.7.0",
+    "cors": "^2.8.5",
+    "googleapis": "^134.0.0",
+    "mongodb": "^6.3.0"
+  }
+}

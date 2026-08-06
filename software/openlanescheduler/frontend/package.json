@@ -1,0 +1,21 @@
+{
+  "name": "lunar-lanes-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.263.1",
+    "react": "^18.3.1",
+    "react-calendar": "^5.1.0",
+    "react-dom": "^18.3.1",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
+  }
+}
