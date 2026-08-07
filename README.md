@@ -18,7 +18,7 @@ See the [full background and concept](https://nicholas-a-hall.github.io/openlane
 | `hardware/` | Hardware references and board notes (placeholder — empty for now) |
 | [`software/lanecompute/`](software/lanecompute) | Per-lane compute node: FastAPI scoring/state-machine backend, vision (pin detection), and the React bowler/overhead UI |
 | [`software/openlanescheduler/`](software/openlanescheduler) | Lane reservation and maintenance scheduler — manager dashboard, lane kiosks, mechanics module |
-| [`docs/`](docs) | Source for the GitHub Pages site (architecture, mesh protocol, message format, API surface) |
+| [`docs/`](docs) | Source for the GitHub Pages site (architecture, mesh protocol, message format, API surface, real-installation walkthrough) |
 
 ## Current state
 
