@@ -5,6 +5,7 @@ const cors = require('cors');
 const GoogleCalendarClient = require('./googleCalendar');
 const StateManager = require('./src/services/StateManager');
 const MongoManager = require('./src/services/MongoManager');
+const { LANES } = require('./src/config/lanes');
 
 // ── Config ──────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
@@ -1223,8 +1224,15 @@ function parseEvent(ev, forceLane) {
     }
   }
 
-  // Ensure lane is valid (1-8)
-  lane = Math.max(1, Math.min(8, lane || 1));
+  // Ensure lane is one this installation actually has -- a numeric 1-8
+  // clamp used to accept any lane in that range regardless of which ones
+  // are configured (LANES env var, see src/config/lanes.js), which would
+  // silently misfile a reservation onto a lane that doesn't exist on a
+  // smaller installation.
+  if (!LANES.includes(lane)) {
+    console.warn(`Event "${title}" specifies lane ${lane}, not in configured LANES (${LANES.join(',')}) -- defaulting to lane ${LANES[0]}`);
+    lane = LANES[0];
+  }
 
   // Clean up party name
   if (!party || party.trim() === '') {

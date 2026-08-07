@@ -40,6 +40,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - MONGODB_URL=mongodb://mongodb:27017
       - TZ=America/Chicago
+      - LANES=${LANES:-1,2,3,4,5,6,7,8}
       - SERVICE_CATEGORIES=GEAR BOX,DETECTOR,TURRET,DECK,PIT,CONVEYOR,ELEVATOR,RAKE,BELTS,BALL RETURN,SCORING,ELECTRICAL,OTHER
       # Uncomment and configure for Google Calendar sync:
       #- GCAL_API_KEY=
@@ -55,6 +56,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        - VITE_LANES=${LANES:-1,2,3,4,5,6,7,8}
       # Don't set VITE_BACKEND_URL - let it auto-detect from hostname
     ports:
       - "8080:80"

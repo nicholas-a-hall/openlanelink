@@ -19,7 +19,20 @@ export const C = {
   cardGradient:'none', headerGradient:'none',
 };
 export const F = { head:'"Orbitron","Courier New",monospace', mono:'"Share Tech Mono","Courier New",monospace' };
-export const LANES = [1,2,3,4,5,6,7,8];
+// Which physical lanes this installation actually has, driven by the
+// VITE_LANES build-time env var (comma-separated, e.g. "7,8" for a single
+// gateway pair) -- defaults to a full 8-lane house so nothing changes for
+// a deployment that doesn't set it. Vite bakes import.meta.env.* in at
+// build time, not runtime, so this can't be an env var read at container
+// startup the way the backend's LANES is -- the frontend image has to be
+// rebuilt (or built with --build-arg VITE_LANES=...) for a change here to
+// take effect, same as VITE_KIOSK_LANES already requires per docker-compose.yml.
+function parseLanes(raw) {
+  if (!raw) return [1, 2, 3, 4, 5, 6, 7, 8];
+  const lanes = raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => Number.isInteger(n) && n > 0);
+  return lanes.length > 0 ? lanes : [1, 2, 3, 4, 5, 6, 7, 8];
+}
+export const LANES = parseLanes(import.meta.env.VITE_LANES);
 export const HOURS = ['9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p','10p','11p'];
 
 export const EMBEDDED = window.self !== window.top;

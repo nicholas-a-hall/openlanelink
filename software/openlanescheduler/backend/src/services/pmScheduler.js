@@ -1,4 +1,5 @@
 const { getTemplatesByFrequency, getTemplate } = require('./pmTemplates');
+const { LANES } = require('../config/lanes');
 
 /**
  * PM Scheduler - Auto-generates preventative maintenance tasks
@@ -19,7 +20,7 @@ async function generatePMTasksForToday(stateManager, config) {
   for (const template of dailyTemplates) {
     if (template.perLane) {
       // Create task for each lane
-      for (let lane = 1; lane <= 8; lane++) {
+      for (const lane of LANES) {
         const task = createTaskFromTemplate(template, lane, today);
         tasks.push(task);
       }
@@ -38,7 +39,7 @@ async function generatePMTasksForToday(stateManager, config) {
 
     for (const template of weeklyTemplates) {
       if (template.perLane) {
-        for (let lane = 1; lane <= 8; lane++) {
+        for (const lane of LANES) {
           const task = createTaskFromTemplate(template, lane, weeklyTime);
           tasks.push(task);
         }
@@ -57,7 +58,7 @@ async function generatePMTasksForToday(stateManager, config) {
 
     for (const template of monthlyTemplates) {
       if (template.perLane) {
-        for (let lane = 1; lane <= 8; lane++) {
+        for (const lane of LANES) {
           const task = createTaskFromTemplate(template, lane, monthlyTime);
           tasks.push(task);
         }

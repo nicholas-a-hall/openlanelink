@@ -3,9 +3,11 @@ WORKDIR /app
 
 # Accept build arguments
 ARG VITE_BACKEND_URL=/
+ARG VITE_LANES=1,2,3,4,5,6,7,8
 
-# Set as environment variable for Vite build
+# Set as environment variables for Vite build
 ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+ENV VITE_LANES=$VITE_LANES
 
 COPY package.json package-lock.json* ./
 RUN npm install

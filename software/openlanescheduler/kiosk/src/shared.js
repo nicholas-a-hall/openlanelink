@@ -22,7 +22,17 @@ export const C = {
   kioskMagenta:'#ff00ff', kioskOrange:'#ff6600',
 };
 export const F = { head:'"Orbitron","Courier New",monospace', mono:'"Share Tech Mono","Courier New",monospace' };
-export const LANES = [1,2,3,4,5,6,7,8];
+// Which physical lanes this installation actually has -- same VITE_LANES
+// convention as frontend/src/shared.js (see its comment for the build-time
+// vs. runtime caveat). Distinct from VITE_KIOSK_LANES (docker-compose.yml),
+// which is which lane PAIR this specific kiosk instance displays, not the
+// full set that exists in the house.
+function parseLanes(raw) {
+  if (!raw) return [1, 2, 3, 4, 5, 6, 7, 8];
+  const lanes = raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => Number.isInteger(n) && n > 0);
+  return lanes.length > 0 ? lanes : [1, 2, 3, 4, 5, 6, 7, 8];
+}
+export const LANES = parseLanes(import.meta.env.VITE_LANES);
 export const HOURS = ['9a','10a','11a','12p','1p','2p','3p','4p','5p','6p','7p','8p','9p','10p','11p'];
 
 // Neumorphic shadow builders — depth comes only from the paired light (top-left) /

@@ -6,7 +6,18 @@ const MQTT_BROKER_URL = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'info';
 
-const LANES = [1, 2, 3, 4, 5, 6, 7, 8];
+// Which physical lanes this installation actually has, driven by the
+// LANES env var (comma-separated, e.g. "7,8") -- defaults to a full
+// 8-lane house so nothing changes for a deployment that doesn't set it.
+// Own copy of the same parsing the backend does (backend/src/config/lanes.js)
+// since this is a separate deployable process with no shared package to
+// import it from.
+function parseLanes(raw) {
+  if (!raw) return [1, 2, 3, 4, 5, 6, 7, 8];
+  const lanes = raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => Number.isInteger(n) && n > 0);
+  return lanes.length > 0 ? lanes : [1, 2, 3, 4, 5, 6, 7, 8];
+}
+const LANES = parseLanes(process.env.LANES);
 
 // ── Logger ───────────────────────────────────────────────
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
