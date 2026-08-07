@@ -235,6 +235,22 @@ async def add_game(lane: int, body: GameCreate = GameCreate()):
     return {"id": game.id, "startedAtMs": game.started_at_ms, "gameType": gt.name}
 
 
+@app.post("/api/lanes/{lane}/reset")
+async def reset_lane(lane: int):
+    """Full wipe: clears the bowler roster AND the game, back to a blank
+    IDLE lane -- for turning a lane over to a new party. NOT how a lane
+    starts its next game with the people already checked in; that's
+    POST .../games again, which keeps the roster on purpose (see
+    game_state.LaneState.add_game()'s docstring) -- this endpoint exists
+    specifically to override that persistence when a lane really is done
+    with its current bowlers."""
+    _require_valid_lane(lane)
+    game_state.get_lane(lane).reset()
+    state_machine.get_machine(lane, _bridge_object()).reset()
+    await broadcast_state(lane)
+    return _lane_snapshot(lane)
+
+
 @app.put("/api/lanes/{lane}/bowlers/{bowler_id}/score")
 async def edit_score(lane: int, bowler_id: str, body: ScoreEdit):
     _require_valid_lane(lane)
@@ -249,21 +265,34 @@ async def edit_score(lane: int, bowler_id: str, body: ScoreEdit):
 
 
 class PinfallObserved(BaseModel):
-    pinfall: int
+    # Exactly one of these two, not both -- see on_pinfall_observed()'s
+    # docstring. pinfall: manual entry, a plain count, no per-pin detail.
+    # standing_mask: vision's raw "which pins are standing right now" (bit
+    # N-1 = pin N), no memory of any earlier capture -- this endpoint (via
+    # state_machine) derives the count/fallen-mask itself by diffing
+    # against whatever's already been recorded so far this frame.
+    pinfall: int | None = None
+    standing_mask: int | None = None
 
 
 @app.post("/api/lanes/{lane}/pinfall")
 async def report_pinfall(lane: int, body: PinfallObserved):
-    """Manual pinfall entry -- stands in for vision/pinfall.py until that's
-    built (see state_machine.py's on_pinfall_observed). Usable from a bowler
-    tablet or staff UI today; vision will call the same state-machine hook
-    later without this endpoint's shape needing to change. Only valid while
-    the lane is actually AWAITING_PINFALL (i.e. a ball has been detected by
-    the beam sensors) -- not a free-form "add a ball" endpoint."""
+    """Pinfall entry -- both manual entry (a bowler tablet or staff UI)
+    and ../vision/pinfall.py go through this same endpoint and the same
+    state_machine.on_pinfall_observed() hook, just with different bodies
+    (see PinfallObserved above). NOT gated on the lane already being
+    AWAITING_PINFALL (i.e. beam events aren't a prerequisite) -- see
+    on_pinfall_observed()'s docstring for why; this is trusted as ground
+    truth that a ball was thrown regardless of whatever beam/cycle events
+    did or didn't arrive first. Still not a free-form "add a ball"
+    endpoint though: a 409 means there's no active game/bowler on this
+    lane, and a 400 means this bowler's game is already complete, neither
+    pinfall nor standing_mask was given, or (standing_mask path) an
+    earlier ball this frame has no per-pin detail to diff against."""
     _require_valid_lane(lane)
     machine = state_machine.get_machine(lane, _bridge_object())
     try:
-        machine.on_pinfall_observed(body.pinfall)
+        machine.on_pinfall_observed(body.pinfall, body.standing_mask)
     except state_machine.InvalidTransitionError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:

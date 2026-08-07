@@ -23,19 +23,31 @@ daemon and not part of this service either.
 - `main.py` — entry point; runs uvicorn and starts `bridge_client.BridgeClient.run()` as a background asyncio task on the same event loop, so its callbacks (`on_lane_event`/`on_beam_event`/`on_status_event`) can `await` broadcasts directly — no thread-safe handoff needed now that nothing here reads serial on its own thread. Also where per-lane event *timing/scheduling* lives (e.g. pairing a speed node's raw upstream/downstream `BeamEvent`s into an interval, with a timeout) — nodes only emit raw events and accept commands, they never correlate multiple readings themselves. See `on_beam_event()`.
 - `speed.py` — interval (ms) -> ball speed (mph), using a calibratable beam-spacing constant.
 
-## Status (2026-08-06)
+## Status (2026-08-07)
 The speed-pairing/timeout logic, the scoring engine (verified against
 known games: perfect 300, all-gutter 0, all-5-pin-spares 150, in-progress
 games), the full REST/WebSocket API layer, and the per-lane game/mesh
 state machine (`state_machine.py`) are done. The gateway now forwards
 pinsetter `MSG_STATUS` to the Pi (`UART_PINSETTER_STATUS`, see
 `firmware/PROTOCOL.md`), so `PINSETTER_BUSY` waits on a real
-`STATUS_CYCLE_COMPLETE` rather than a timeout. The UART bridge itself was
-extracted into `../uart_bridge` as its own systemd-managed process (this
-service is now a client of it, see `bridge_client.py`). Camera capture and
-pinfall detection live in `../vision/` and are not implemented yet —
-`POST /api/lanes/{lane}/pinfall` is a manual-entry stand-in until then
-(see `../vision/README.md`).
+`STATUS_CYCLE_COMPLETE` rather than a timeout -- except when vision is
+driving the game (see below), which never needs it at all. The UART
+bridge itself was extracted into `../uart_bridge` as its own
+systemd-managed process (this service is now a client of it, see
+`bridge_client.py`).
+
+Camera capture and pinfall detection (`../vision/`) are implemented and
+wired in — `POST /api/lanes/{lane}/pinfall` accepts either a manual
+`{pinfall}` count (bowler tablet/staff UI) or vision's raw `{standing_mask}`
+observation; this service derives the actual per-ball count/mask itself
+in the latter case (`game_state.LaneState.standing_mask_before_next_ball()`),
+since vision intentionally has no memory of its own across captures (see
+`../vision/README.md`'s "Relationship to state_machine"). This also means
+`/pinfall` is no longer gated on the lane being `AWAITING_PINFALL` —
+beam events are an optional timing signal now, not a prerequisite for
+scoring; a pinfall report alone infers the ball happened, records it, and
+(via the completion check in `_record_ball`) even infers the whole game
+finishing without ever needing an explicit `/cycle-complete` call.
 
 ## API surface
 Once running, interactive docs are at `/docs` (FastAPI auto-generates an

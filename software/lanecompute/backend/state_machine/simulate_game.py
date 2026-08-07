@@ -10,6 +10,9 @@ needed, the WebSocket broadcast pushes every state change as it happens.
 
 Not a test suite (see game_state.py/state_machine.py for those) -- this is
 for eyeballing the real API + UI wiring end to end with a realistic game.
+Also exercises both reset flows after the full game: starting a new game
+with the same players (POST .../games again) and a full lane reset that
+clears the roster too (POST .../reset).
 
 Usage:
     uv run --with requests python simulate_game.py [--lane 7] [--base http://localhost:8000]
@@ -95,6 +98,26 @@ class GameSimulator:
             total = next((f["runningTotal"] for f in reversed(b["frames"]) if f["runningTotal"] is not None), 0)
             print(f"{b['name']}: {frames_str}  => TOTAL {total}")
 
+    def start_new_game_same_players(self) -> None:
+        """POST .../games again -- same roster, fresh scoresheet. Not a
+        separate endpoint from the first game start; this IS how a lane
+        starts its next game with the people already checked in (see
+        game_state.LaneState.add_game()'s docstring)."""
+        print("\n=== Starting a new game, same players (POST /games again) ===")
+        self.post("/games", {"game_type": "ten_pin"})
+
+    def full_reset(self) -> None:
+        """POST .../reset -- wipes the roster AND the game, distinct from
+        start_new_game_same_players() above. Asserts the wipe actually
+        took, not just that the call returned 2xx."""
+        print("\n=== Full reset (clears roster + game, for a new party) ===")
+        self.post("/reset")
+        snap = self.get()
+        assert snap["game"] is None, f"expected game=None after reset, got {snap['game']}"
+        assert snap["bowlers"] == [], f"expected empty roster after reset, got {snap['bowlers']}"
+        assert snap["machineState"] == "IDLE", f"expected IDLE after reset, got {snap['machineState']}"
+        print(f"Confirmed wiped: game={snap['game']}, bowlers={snap['bowlers']}, machineState={snap['machineState']}")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -111,14 +134,31 @@ def main():
     print("=== Waiting for a game to start ===")
     sim.ensure_game_started()
 
-    print("\n=== Bowling ===")
+    print("\n=== Bowling (game 1) ===")
     for frame_no in range(10):
         for balls in (ALICE[frame_no], BOB[frame_no]):
             for ball in balls:
                 sim.throw(ball, f"(frame {frame_no + 1})")
 
-    print("\n=== Final scoresheet ===")
+    print("\n=== Final scoresheet (game 1) ===")
     sim.print_scoresheet()
+
+    # Same roster, fresh scoresheet -- one quick frame is enough to prove
+    # both halves of that: Alice/Bob are still checked in (no re-adding
+    # bowlers needed) and their totals reset to just this frame's score,
+    # not carried over from game 1.
+    sim.start_new_game_same_players()
+    print("\n=== Bowling one frame (game 2, same players) ===")
+    sim.throw(7, "(frame 1)")
+    sim.throw(2, "(frame 1)")
+    sim.throw(5, "(frame 1)")
+    sim.throw(3, "(frame 1)")
+    print("\n=== Scoresheet after one frame of game 2 ===")
+    sim.print_scoresheet()
+
+    # Wipes the roster too -- the lane is done with Alice/Bob entirely,
+    # as opposed to the same-players restart above.
+    sim.full_reset()
 
 
 if __name__ == "__main__":

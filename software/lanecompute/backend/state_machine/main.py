@@ -104,21 +104,25 @@ async def on_beam_event(ev):
     mph = speed.interval_to_mph(interval_ms)
     log.info("Lane %s ball speed: interval=%dms (%.1f mph)", ev.lane_number, interval_ms, mph)
     await api.broadcast_event(ev.lane_number, "ball_speed", {"mph": round(mph, 1), "intervalMs": interval_ms})
-    # TODO: PHOTO_COOLDOWN_S after this, trigger a capture on the vision/
-    # daemon for ev.lane_number -- that's a SEPARATE, un-Dockerized process
-    # with direct camera access (see vision/README.md), not something this
-    # process calls into directly. Integration mechanism not decided yet.
-    # Once vision exists, it should feed its pinfall count into
-    # state_machine.on_pinfall_observed() the same way
-    # POST /api/lanes/{lane}/pinfall does today (api.py) -- that call
-    # already handles recording the ball and sending cycle/rerack.
+    # Vision is a fully standalone process from this one's point of view --
+    # it decides for itself when to capture (see vision/README.md) and its
+    # only relationship to this process is reporting a resulting pinfall
+    # count via POST /api/lanes/{lane}/pinfall (api.py), the same call that
+    # already handles recording the ball and sending cycle/rerack. This
+    # process does not trigger or otherwise know about vision at all.
 
 
 async def on_status_event(ev):
     log.info("StatusEvent: %s", ev)
+    machine = state_machine.get_machine(ev.lane_number, bridge)
+    # Always None today -- see protocol.py's StatusEvent docstring for why
+    # -- but cross-checking costs nothing and needs no changes here once
+    # uart_bridge starts actually sending it.
+    if ev.ball_number is not None:
+        machine.reconcile_ball_number(ev.ball_number)
     if ev.status_code != protocol.STATUS_CYCLE_COMPLETE:
         return  # other status codes (heartbeat, relay fault, ...) not acted on yet
-    state_machine.get_machine(ev.lane_number, bridge).on_cycle_complete()
+    machine.on_cycle_complete()
     await api.broadcast_state(ev.lane_number)
 
 

@@ -95,6 +95,19 @@ class StatusEvent:
     status_code: int
     lane_number: int  # 0 for node-level status codes (see PROTOCOL.md)
     timestamp_ms: int
+    # The pinsetter DOES report this on the wire -- MSG_STATUS's
+    # MachineRecord.flags has a real ball(0=1st/1=2nd) bit per machine
+    # (firmware/PROTOCOL.md) -- but nothing decodes/forwards it yet:
+    # decode() below only unpacks _STATUS_EVENT_FMT's 8-byte header, and
+    # uart_bridge's own status broadcast (its /events WS feed, which is
+    # what actually populates this in practice today -- see
+    # bridge_client.py's _dispatch()) only sends statusCode/laneNumber/
+    # timestampMs. Stays None until uart_bridge is extended to parse and
+    # forward MachineRecord -- state_machine.py's LaneStateMachine.
+    # reconcile_ball_number() already handles that being unavailable by
+    # just not being called, so no further changes will be needed here
+    # once that's built.
+    ball_number: int | None = None
 
     @classmethod
     def decode(cls, payload: bytes) -> "StatusEvent":

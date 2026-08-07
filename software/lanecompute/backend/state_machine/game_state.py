@@ -11,11 +11,28 @@ consolidation into one shared module; this is that module. Once the UI is
 wired to this API it should stop computing scores itself and just render
 what it's given.
 
-Ball pinfall convention: each recorded ball is the COUNT of pins that fell
-on that specific throw -- not a cumulative standing-pin mask. The camera
-pipeline (pinfall.py, not yet implemented) observes standing pins and is
-responsible for converting that into a per-ball pinfall count before calling
-record_ball(); this module only ever deals in that count.
+Ball pinfall convention: scoring (score_game() and everything upstream of
+it -- frame validation, turn-over/rerack decisions) is driven entirely by
+the flat pinfall COUNT per ball, since that's all USBC scoring actually
+needs and it keeps score_game()'s frame-walking arithmetic simple. But the
+count alone throws away exactly which pins fell -- Bowler.pin_masks carries
+that detail alongside (not instead of) balls, index-aligned ball-for-ball,
+so the count stays the single source of truth for scoring while the mask is
+still recorded for anyone who wants it (a future overhead-display pin-deck
+visualization, auditing a disputed call, re-deriving a corrected count if a
+mask turns out to be wrong). A ball recorded without mask detail (a foul's
+automatic 0, a manual scoresheet correction) just carries None in the
+matching pin_masks slot -- that's expected, not an error state.
+
+The vision pipeline (../vision/pinfall.py) does NOT do this diffing itself
+-- it only ever reports which pins are standing RIGHT NOW, with no memory
+of any previous capture (see its module docstring; nodes/services in this
+project stay dumb, the thing with the actual state owns deriving anything
+from it, same principle as the ESP32 mesh). standing_mask_before_next_ball()
+below is what turns "here's what's standing now" into "here's what fell on
+THIS ball" -- it derives the pre-ball baseline from whatever's already been
+recorded so far this frame, so vision never has to remember anything
+across calls.
 
 Game type: score_game() is a generic frame-walking algorithm parametrized by
 a game_types.GameType (see that module) -- it's not ten-pin-specific despite
@@ -34,6 +51,13 @@ from dataclasses import dataclass, field
 
 from game_types import GameType, DEFAULT_GAME_TYPE
 
+# 10 bits, all pins standing -- matches firmware/PROTOCOL.md's
+# MSG_SCORE_EVENT.pinfallMask convention (bit N-1 = pin N) and
+# ../vision/pinfall.py's own FULL_MASK, duplicated rather than imported
+# since state_machine and vision are separate standalone services (see
+# vision/README.md's "Relationship to state_machine").
+FULL_PIN_MASK = 0b11_1111_1111
+
 
 class UnknownBowlerError(KeyError):
     pass
@@ -44,6 +68,11 @@ class Bowler:
     id: str
     name: str
     balls: list[int] = field(default_factory=list)  # flat pinfall-per-ball list, this game
+    # Index-aligned with balls: which pins fell on that ball, bit N-1 = pin
+    # N (matches firmware/PROTOCOL.md's MSG_SCORE_EVENT.pinfallMask
+    # convention). None where a ball has no per-pin detail (a foul, a
+    # manual scoresheet edit) -- always the same length as balls.
+    pin_masks: list[int | None] = field(default_factory=list)
 
 
 @dataclass
@@ -103,12 +132,27 @@ class LaneState:
             raise UnknownBowlerError(bowler_id) from None
 
     # ---- games ----
+    def reset(self) -> None:
+        """Full wipe: clears the roster AND the game, back to a blank lane
+        -- for turning a lane over to a new party of bowlers, not for
+        starting a fresh scoresheet with the people already checked in
+        (that's add_game(), which deliberately keeps the roster). Bowlers
+        normally persist across games (see add_bowler()'s docstring) --
+        this is the one place that's intentionally overridden."""
+        self.bowlers.clear()
+        self._bowler_order.clear()
+        self.game = None
+
     def add_game(self, game_type: GameType = DEFAULT_GAME_TYPE) -> Game:
         """Fresh scoresheet for the current roster -- resets every bowler's
         balls. game_type picks which ruleset score_game() applies for this
-        game (see game_types.py); defaults to ten-pin."""
+        game (see game_types.py); defaults to ten-pin. This is also how a
+        lane starts its *next* game with the same players once one
+        finishes -- same call, no separate endpoint, since keeping the
+        roster and resetting scores is exactly what this already does."""
         for bowler in self.bowlers.values():
             bowler.balls = []
+            bowler.pin_masks = []
         self.game = Game(
             id=uuid.uuid4().hex[:8],
             lane_number=self.lane_number,
@@ -125,17 +169,26 @@ class LaneState:
         return self.game.game_type if self.game else DEFAULT_GAME_TYPE
 
     # ---- scoring ----
-    def record_ball(self, bowler_id: str, pinfall: int) -> None:
+    def record_ball(self, bowler_id: str, pinfall: int, pin_mask: int | None = None) -> None:
         """A ball can only knock down pins that are actually still standing
         -- e.g. ball1=9 leaves at most 1 pin for ball2; a "second-ball
         strike" is physically impossible in real ten-pin (frames 1-9) and
         this must never silently accept one. The only ball that's ever
         unconstrained by the frame's running sum is the first ball of a
         frame, or the ball right after a clear (fresh rack -- the final
-        frame's bonus balls after a strike/spare)."""
+        frame's bonus balls after a strike/spare).
+
+        pin_mask is optional detail, not a second source of truth: pinfall
+        (the count) is what scoring actually validates/uses, exactly as
+        before. When a mask IS given, though, it must actually agree with
+        the count -- a caller passing both that disagree is a bug (vision
+        computing the count and mask inconsistently, or a transport error),
+        not something to silently store."""
         bowler = self._require_bowler(bowler_id)
         gt = self._game_type()
         _validate_pinfall(pinfall, gt)
+        if pin_mask is not None and bin(pin_mask).count("1") != pinfall:
+            raise ValueError(f"pin_mask {pin_mask:#x} has {bin(pin_mask).count('1')} bit(s) set, doesn't match pinfall={pinfall}")
         if _is_complete(bowler.balls, gt):
             raise ValueError(f"bowler {bowler_id}'s game is already complete")
         remaining = _pins_remaining_for_next_ball(_current_frame_balls(bowler.balls, gt), gt)
@@ -144,6 +197,45 @@ class LaneState:
                 f"pinfall {pinfall} exceeds the {remaining} pin(s) still standing this frame"
             )
         bowler.balls.append(pinfall)
+        bowler.pin_masks.append(pin_mask)
+
+    def standing_mask_before_next_ball(self, bowler_id: str) -> int | None:
+        """Which pins are standing going into this bowler's next ball --
+        derived from this frame's already-recorded balls' pin_masks, not
+        tracked as separate state anywhere. This is what lets vision stay
+        completely stateless (see this module's docstring): it reports a
+        raw "standing right now" mask, and diffing that against THIS is
+        how a caller (state_machine.py's on_pinfall_observed) turns it
+        into "here's what fell on this specific ball."
+
+        Full rack if no balls have been thrown yet this frame (a fresh
+        frame, or the ball right after a clear -- see
+        _pins_remaining_for_next_ball()'s docstring, this mirrors its
+        exact reset-on-clear logic, mask instead of count). None if we
+        genuinely can't know: some ball already thrown this frame has no
+        per-pin detail (manual entry, a foul), so there's no reliable
+        baseline to diff a vision observation against -- the caller
+        should treat that as "can't derive a mask-based count right now,"
+        not fabricate one."""
+        bowler = self._require_bowler(bowler_id)
+        gt = self._game_type()
+        frame_balls = _current_frame_balls(bowler.balls, gt)
+        if not frame_balls:
+            return FULL_PIN_MASK
+        frame_masks = bowler.pin_masks[-len(frame_balls):]
+        if any(m is None for m in frame_masks):
+            return None
+
+        standing = FULL_PIN_MASK
+        total = 0
+        for pos, (count, mask) in enumerate(zip(frame_balls, frame_masks)):
+            total += count
+            threshold = gt.strike_threshold if pos == 0 else gt.pins_per_throw_max
+            if total >= threshold:
+                standing, total = FULL_PIN_MASK, 0  # cleared -- fresh rack for whatever's next
+            else:
+                standing &= ~mask & FULL_PIN_MASK
+        return standing
 
     def edit_score(self, bowler_id: str, frame_number: int, ball_in_frame: int, pinfall: int) -> None:
         """Manual correction: overwrite one already-recorded ball's pinfall,
@@ -176,13 +268,39 @@ class LaneState:
 
         ball_index = sum(len(f["balls"]) for f in frames[:frame_number - 1]) + (ball_in_frame - 1)
         bowler.balls[ball_index] = pinfall
+        # A manual correction no longer has a real per-pin observation
+        # behind it -- keeping the old mask around would misrepresent it
+        # as still-trustworthy detail for whatever the corrected count is.
+        bowler.pin_masks[ball_index] = None
 
     def frames(self, bowler_id: str) -> list[dict]:
         """Frame breakdown + running score under this lane's active
         game_type, computed fresh from the flat ball list every time -- no
-        cached/stale totals."""
+        cached/stale totals. pinMasks is stitched in per frame afterward,
+        index-aligned with that frame's own "balls" list -- score_game()
+        stays a pure function of the flat count list and knows nothing
+        about masks; every ball in bowler.balls ends up in exactly one
+        frame's "balls" list in the same flat order (bonus balls included,
+        see score_game()'s docstring), so walking frames in order and
+        slicing pin_masks by each frame's ball count lines them up exactly
+        the same way edit_score()'s ball_index math already does."""
         bowler = self._require_bowler(bowler_id)
-        return score_game(bowler.balls, self._game_type())
+        frames = score_game(bowler.balls, self._game_type())
+        idx = 0
+        for f in frames:
+            n = len(f["balls"])
+            f["pinMasks"] = bowler.pin_masks[idx:idx + n]
+            idx += n
+        return frames
+
+    def current_ball_number(self, bowler_id: str) -> int | None:
+        """Which ball (1st, 2nd, ...) this bowler is about to throw within
+        their current frame -- None if their game's already complete, same
+        meaning as snapshot()'s per-bowler `currentBall` (this just exposes
+        it standalone, for state_machine.py's reconcile_ball_number() to
+        cross-check against a hardware-reported ball number without
+        needing a full snapshot)."""
+        return self._current_frame_and_ball(self.frames(bowler_id))[1]
 
     def snapshot(self) -> dict:
         """Everything a display/control client needs for this lane --
