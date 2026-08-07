@@ -61,7 +61,7 @@ class LaneStateMachine:
             "currentBowlerId": self._current_bowler_id(),
         }
 
-    # ---- sensor/mesh events (see main.py's UartBridge callbacks) ----
+    # ---- sensor/mesh events (see main.py's BridgeClient callbacks) ----
     def on_upstream_beam(self) -> None:
         if self.state != State.READY:
             log.warning("Lane %s: upstream beam in state %s, ignored", self.lane_number, self.state.name)

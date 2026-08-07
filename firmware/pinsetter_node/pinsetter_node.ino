@@ -208,6 +208,15 @@ uint8_t relayState = 0x00;
 unsigned long pulseEndTime[8] = {0};
 uint8_t diState = 0x00;
 
+// The gateway dual-sends every MSG_COMMAND on both ESP-NOW and RS485,
+// unconditionally, so it can survive either transport failing (see
+// PROTOCOL.md's "Dual-send" section) -- both copies carry the SAME seq.
+// When both transports are actually up, this node would otherwise execute
+// the same command twice (e.g. a double pinsetter cycle per foul). Track
+// the last-processed command seq and skip an immediate repeat.
+uint8_t lastCommandSeq = 0;
+bool haveLastCommandSeq = false;
+
 unsigned long lastHeartbeat = 0;
 unsigned long lastRegisterAttempt = 0;
 uint8_t lastSentDiState = 0xFF;
@@ -616,6 +625,19 @@ void execPinsetterCommand(const NodeMessage &msg) {
 void handleIncomingNodeMessage(const NodeMessage &msg, const char *via) {
   switch (msg.msgType) {
     case MSG_COMMAND:
+      // Same seq as the last command we ran == the other transport's copy
+      // of the message we already executed, not a new command -- see
+      // lastCommandSeq's declaration above.
+      if (haveLastCommandSeq && msg.seq == lastCommandSeq) {
+        Serial.print("Duplicate MSG_COMMAND (seq=");
+        Serial.print(msg.seq);
+        Serial.print(") via ");
+        Serial.print(via);
+        Serial.println(", already executed via the other transport -- skipped");
+        break;
+      }
+      lastCommandSeq = msg.seq;
+      haveLastCommandSeq = true;
       execPinsetterCommand(msg);
       break;
     case MSG_ACK:

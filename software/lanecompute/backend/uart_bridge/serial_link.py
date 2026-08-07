@@ -1,8 +1,14 @@
-"""Framed byte-protocol bridge to the gateway ESP32 over UART.
+"""Framed byte-protocol transport to the gateway ESP32 over UART.
 
 Frame: [0xAA START][LEN][PAYLOAD (LEN bytes, payload[0] = msg type)][CHECKSUM]
 CHECKSUM = XOR of LEN and every PAYLOAD byte. Mirrors gateway_node.ino's
 sendToPi()/pollPiLink() exactly -- keep both sides in sync if this changes.
+
+This is the low-level transport only, adapted from
+../state_machine/uart_bridge.py now that the bridge is its own process --
+service.py wraps it in an HTTP/WebSocket surface for other processes (the
+game state machine) to consume instead of importing this class directly.
+See README.md for why.
 """
 
 import logging
@@ -23,21 +29,26 @@ def _checksum(length: int, payload: bytes) -> int:
     return total & 0xFF
 
 
-class UartBridge:
+class SerialLink:
     # How often to retry opening the port while disconnected -- lets this
     # run (mesh commands just unavailable/503) without real hardware
     # attached, and recovers on its own once a gateway is plugged in.
     RECONNECT_INTERVAL_S = 5.0
 
     def __init__(self, port: str, baud: int = 115200, on_lane_event=None, on_beam_event=None, on_status_event=None):
-        self._port = port
-        self._baud = baud
+        self.port = port
+        self.baud = baud
         self._ser: serial.Serial | None = None
         self._on_lane_event = on_lane_event
         self._on_beam_event = on_beam_event
         self._on_status_event = on_status_event
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        # Monotonic timestamp of the last successfully-checksummed frame,
+        # of any type. Exposed so /health can tell "port is open" apart from
+        # "the gateway is actually talking" -- a stuck or miswired link can
+        # hold the port open with nothing ever arriving.
+        self.last_frame_at: float | None = None
 
     @property
     def connected(self) -> bool:
@@ -55,11 +66,11 @@ class UartBridge:
 
     def _try_connect(self) -> bool:
         try:
-            self._ser = serial.Serial(self._port, self._baud, timeout=0.05)
-            log.info("UART connected on %s @ %d baud", self._port, self._baud)
+            self._ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            log.info("UART connected on %s @ %d baud", self.port, self.baud)
             return True
         except serial.SerialException as e:
-            log.warning("could not open UART port %s: %s", self._port, e)
+            log.warning("could not open UART port %s: %s", self.port, e)
             self._ser = None
             return False
 
@@ -136,6 +147,7 @@ class UartBridge:
                         state = "READ_CHECKSUM"
                 elif state == "READ_CHECKSUM":
                     if b == _checksum(expected_len, bytes(buf)):
+                        self.last_frame_at = time.monotonic()
                         self._dispatch(bytes(buf))
                     else:
                         log.warning("checksum mismatch, dropping frame")

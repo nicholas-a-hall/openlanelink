@@ -1,0 +1,12 @@
+[project]
+name = "openlanelink-state-machine"
+version = "0.1.0"
+description = "openlanelink game state machine / compute-node REST+WebSocket API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "paho-mqtt>=1.6,<2.0",
+    "httpx>=0.27",
+    "websockets>=12.0",
+]

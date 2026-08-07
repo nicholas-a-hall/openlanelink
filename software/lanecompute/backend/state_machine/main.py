@@ -1,12 +1,16 @@
-"""Entry point for the openlanelink scoring/compute node.
+"""Entry point for the openlanelink game state machine / compute-node API.
 
 Runs the FastAPI/uvicorn ASGI server (api.py) as the process's main event
-loop, and starts the UartBridge (uart_bridge.py) as a background thread
-alongside it. The bridge's callbacks fire on that background thread --
-pyserial's blocking reads don't have a clean async story here -- so pushing
-a WebSocket broadcast from them needs a thread-safe handoff onto the asyncio
-loop uvicorn owns: asyncio.run_coroutine_threadsafe() is that handoff, see
-_schedule_broadcast() below.
+loop. Mesh connectivity is no longer owned by this process directly --
+that's ../uart_bridge's job now, running as its own systemd-managed
+process. This process is instead an HTTP/WebSocket client of it
+(bridge_client.py): outbound commands (cycle/rerack/score) are synchronous
+POSTs, and inbound sensor events are consumed off the bridge's WS /events
+feed on a background asyncio task started in _lifespan() below. Because
+that task runs on the same event loop uvicorn owns (unlike the old
+in-process UartBridge, which read serial on its own thread), the callbacks
+below can await api.broadcast_state()/broadcast_event() directly -- no
+thread-safe handoff needed anymore.
 
 Nodes are dumb: they emit raw sensor events and accept commands relevant to
 their own function, nothing more -- they know nothing about each other beyond
@@ -17,6 +21,7 @@ not firmware's -- see on_beam_event() below. See firmware/HANDOFF.md.
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -24,13 +29,14 @@ import api
 import protocol
 import speed
 import state_machine
-from uart_bridge import UartBridge
+from bridge_client import BridgeClient
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("scoring")
 
-PI_UART_PORT = "/dev/serial0"  # TODO: confirm against the actual Pi wiring
-PI_UART_BAUD = 115200
+# Base URL of the standalone UART bridge service (../uart_bridge). Same
+# host by default -- both processes are meant to run on the same Pi.
+UART_BRIDGE_URL = os.environ.get("UART_BRIDGE_URL", "http://localhost:8100")
 API_HOST = "0.0.0.0"
 API_PORT = 8000
 
@@ -47,23 +53,10 @@ SPEED_TIMEOUT_S = 3.0
 # lane_number -> (upstream event's timestamp_ms, Pi-local time.monotonic() it arrived)
 _pending_upstream: dict[int, tuple[int, float]] = {}
 
-# Set once uvicorn's event loop is running (see _startup). The UartBridge's
-# background thread reads this to schedule broadcasts.
-_loop: asyncio.AbstractEventLoop | None = None
+bridge = BridgeClient(UART_BRIDGE_URL)
 
 
-def _schedule_broadcast(coro) -> None:
-    """Thread-safe handoff from the UartBridge's background thread onto the
-    asyncio event loop uvicorn owns. No-op (with a warning) if called before
-    the server has started -- shouldn't happen since the bridge only starts
-    inside _startup(), after _loop is set."""
-    if _loop is None:
-        log.warning("event loop not ready yet, dropping broadcast")
-        return
-    asyncio.run_coroutine_threadsafe(coro, _loop)
-
-
-def on_lane_event(ev):
+async def on_lane_event(ev):
     log.info("LaneEvent: %s", ev)
     if ev.event_type != protocol.EVENT_FOUL:
         return  # CLEAR is informational only, nothing to act on
@@ -74,10 +67,10 @@ def on_lane_event(ev):
     except state_machine.InvalidTransitionError as e:
         log.warning("Lane %s: %s", ev.lane_number, e)
         return
-    _schedule_broadcast(api.broadcast_state(ev.lane_number))
+    await api.broadcast_state(ev.lane_number)
 
 
-def on_beam_event(ev):
+async def on_beam_event(ev):
     log.info("BeamEvent: %s", ev)
     if ev.event_type != protocol.EVENT_BEAM_BROKEN:
         return  # only the BROKEN edge matters for timing; CLEAR is informational
@@ -87,7 +80,7 @@ def on_beam_event(ev):
     if ev.beam_role == protocol.ROLE_UPSTREAM:
         _pending_upstream[ev.lane_number] = (ev.timestamp_ms, time.monotonic())
         machine.on_upstream_beam()
-        _schedule_broadcast(api.broadcast_state(ev.lane_number))
+        await api.broadcast_state(ev.lane_number)
         return
 
     # The ball reached the pins regardless of whether a speed can also be
@@ -95,7 +88,7 @@ def on_beam_event(ev):
     # pairing that follows can still bail out early on a missing/expired
     # upstream reading without that affecting AWAITING_PINFALL.
     machine.on_downstream_beam()
-    _schedule_broadcast(api.broadcast_state(ev.lane_number))
+    await api.broadcast_state(ev.lane_number)
 
     pending = _pending_upstream.pop(ev.lane_number, None)
     if pending is None:
@@ -110,9 +103,7 @@ def on_beam_event(ev):
     interval_ms = ev.timestamp_ms - upstream_ts_ms
     mph = speed.interval_to_mph(interval_ms)
     log.info("Lane %s ball speed: interval=%dms (%.1f mph)", ev.lane_number, interval_ms, mph)
-    _schedule_broadcast(
-        api.broadcast_event(ev.lane_number, "ball_speed", {"mph": round(mph, 1), "intervalMs": interval_ms})
-    )
+    await api.broadcast_event(ev.lane_number, "ball_speed", {"mph": round(mph, 1), "intervalMs": interval_ms})
     # TODO: PHOTO_COOLDOWN_S after this, trigger a capture on the vision/
     # daemon for ev.lane_number -- that's a SEPARATE, un-Dockerized process
     # with direct camera access (see vision/README.md), not something this
@@ -123,37 +114,33 @@ def on_beam_event(ev):
     # already handles recording the ball and sending cycle/rerack.
 
 
-def on_status_event(ev):
+async def on_status_event(ev):
     log.info("StatusEvent: %s", ev)
     if ev.status_code != protocol.STATUS_CYCLE_COMPLETE:
         return  # other status codes (heartbeat, relay fault, ...) not acted on yet
     state_machine.get_machine(ev.lane_number, bridge).on_cycle_complete()
-    _schedule_broadcast(api.broadcast_state(ev.lane_number))
+    await api.broadcast_state(ev.lane_number)
 
 
-bridge = UartBridge(
-    PI_UART_PORT,
-    PI_UART_BAUD,
-    on_lane_event=on_lane_event,
-    on_beam_event=on_beam_event,
-    on_status_event=on_status_event,
-)
+_bridge_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
 async def _lifespan(_app):
-    global _loop
-    _loop = asyncio.get_running_loop()
+    global _bridge_task
     api.app.state.bridge = bridge
-    bridge.start()
-    log.info("Scoring node running, UART bridge up on %s @ %d baud", PI_UART_PORT, PI_UART_BAUD)
+    _bridge_task = asyncio.create_task(
+        bridge.run(on_lane_event=on_lane_event, on_beam_event=on_beam_event, on_status_event=on_status_event)
+    )
+    log.info("Scoring node running, UART bridge client targeting %s", UART_BRIDGE_URL)
     yield
-    bridge.stop()
+    _bridge_task.cancel()
+    bridge.close()
 
 
 # Assigned post-construction rather than passed to FastAPI(lifespan=...) in
 # api.py, since main.py (not api.py) owns bridge start/stop -- api.py stays
-# importable/testable on its own without a live UartBridge.
+# importable/testable on its own without a live BridgeClient.
 api.app.router.lifespan_context = _lifespan
 
 

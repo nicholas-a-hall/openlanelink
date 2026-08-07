@@ -56,11 +56,27 @@
 
 const bool PINSETTER_ENABLED = true;
 
+// ---- TEMPORARY BENCH-TEST HACK: reroute PiLink onto the USB/console UART
+// (UART0) instead of its real UART2/GPIO16-17 wiring, so the binary PiLink
+// protocol is reachable over the same USB cable already used for the bench
+// console -- no second USB-serial adapter needed. Framed 0xAA binary and
+// human Serial.print() text share the wire; the bridge's frame parser
+// discards non-0xAA bytes while hunting for a frame start, so console text
+// is (mostly) harmless noise to it, but the human console becomes far
+// noisier/less readable and BOTH now run at PI_UART_BAUD, not 9600 -- set
+// your serial monitor to that baud while this is on. REVERT (set to 0)
+// before any real deployment; this is not how the Pi will actually be wired.
+#define PILINK_OVER_USB_BENCH_TEST 1
+
 // ---- Pi link (UART2) -- pins UNVERIFIED, confirm against the board ----
 #define PI_UART_RX_PIN 16
 #define PI_UART_TX_PIN 17
 #define PI_UART_BAUD 115200
-HardwareSerial PiLink(2);
+#if PILINK_OVER_USB_BENCH_TEST
+  #define PiLink Serial
+#else
+  HardwareSerial PiLink(2);
+#endif
 
 // ---- RS485 (UART1) to the pinsetter -- wired fallback to insulate against
 // ESP-NOW failures. Pins UNVERIFIED, confirm against the board. Baud MUST
@@ -81,7 +97,7 @@ uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 // succession (stumble, scramble up, beam re-broken). Act on the first one
 // and suppress repeats per lane for this window -- at most one pinsetter
 // re-rack per lane per cooldown.
-const unsigned long FOUL_COOLDOWN_MS = 750;
+const unsigned long FOUL_COOLDOWN_MS = 50;
 
 // ESP-NOW peers must share a radio channel. This node never joins an AP, so
 // it sits here. The pinsetter node pins itself to the same channel (it can
@@ -846,13 +862,19 @@ void pollSerial() {
 }
 
 void setup() {
+#if PILINK_OVER_USB_BENCH_TEST
+  Serial.begin(PI_UART_BAUD);  // PiLink IS Serial in this mode -- one shared baud, see the flag's comment above
+#else
   Serial.begin(9600);
+#endif
   delay(200);
 
   Serial.println();
   Serial.println("Gateway node starting");
 
+#if !PILINK_OVER_USB_BENCH_TEST
   PiLink.begin(PI_UART_BAUD, SERIAL_8N1, PI_UART_RX_PIN, PI_UART_TX_PIN);
+#endif
   Serial.print("Pi UART link up at ");
   Serial.print(PI_UART_BAUD);
   Serial.println(" baud");

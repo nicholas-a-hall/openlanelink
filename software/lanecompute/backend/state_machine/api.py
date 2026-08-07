@@ -12,8 +12,9 @@ integration) can hit exactly the same way.
 
 See PROTOCOL.md for the mesh command set this passes through to the
 gateway, and game_state.py for the scoring engine this is a thin HTTP
-wrapper around. main.py wires app.state.bridge to a live UartBridge at
-startup; without it, mesh-facing endpoints 503.
+wrapper around. main.py wires app.state.bridge to a live BridgeClient (an
+HTTP/WebSocket client of the standalone ../uart_bridge service, see its
+README.md) at startup; without it, mesh-facing endpoints 503.
 """
 
 import logging
@@ -69,8 +70,8 @@ def _bridge_object():
     """Unlike _bridge(), doesn't require a live connection -- game-state
     mutations (starting a game, recording a ball) work without hardware
     attached; only the mesh command a ball's turnOver triggers actually
-    needs one, and UartBridge.send_cycle/send_rerack already no-op safely
-    (log + drop) when disconnected."""
+    needs one, and BridgeClient.send_cycle/send_rerack already no-op
+    safely (log + drop) when disconnected."""
     return getattr(app.state, "bridge", None)
 
 
@@ -272,15 +273,16 @@ async def report_pinfall(lane: int, body: PinfallObserved):
 
 
 # ---- Mesh sensor events, exposed as real endpoints ----
-# main.py's UartBridge callbacks (on_lane_event/on_beam_event/on_status_event)
-# call these same state_machine.py methods directly today, since they run
-# in-process on the real hardware path and don't need an HTTP round-trip.
-# But the state machine itself only exposes these as Python methods, with no
-# REST surface at all -- meaning anything that ISN'T the real UART bridge
-# (a simulation script, a future alternate sensor integration) had no way to
-# drive lane state through the one path everything else in this API already
-# uses. These close that gap: the UART bridge is just one caller translating
-# hardware events into state-machine calls; it shouldn't be the only one.
+# main.py's bridge_client.BridgeClient callbacks (on_lane_event/
+# on_beam_event/on_status_event) call these same state_machine.py methods
+# directly today, translating events consumed off the UART bridge service's
+# WS /events feed. But the state machine itself only exposes these as
+# Python methods, with no REST surface at all -- meaning anything that
+# ISN'T the real UART bridge (a simulation script, a future alternate
+# sensor integration) had no way to drive lane state through the one path
+# everything else in this API already uses. These close that gap: the UART
+# bridge is just one caller translating hardware events into state-machine
+# calls; it shouldn't be the only one.
 
 class BeamObserved(BaseModel):
     role: str  # "upstream" | "downstream"

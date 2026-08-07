@@ -1,0 +1,25 @@
+[Unit]
+Description=openlanelink UART bridge (gateway ESP32 link)
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Serial device access on Raspberry Pi OS is gated by the `dialout` group --
+# add whatever user runs this to it: sudo usermod -aG dialout pi
+User=pi
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/openlanelink/uart_bridge
+# Override UART_BRIDGE_PORT/BAUD/HTTP_HOST/HTTP_PORT here without editing
+# code. Leading '-' means systemd won't fail to start if the file is absent.
+EnvironmentFile=-/etc/openlanelink/uart-bridge.env
+# `uv run` resolves the project's .venv from pyproject.toml/uv.lock in
+# WorkingDirectory -- no hand-built venv path to keep in sync here.
+# Adjust the uv path if it isn't on PATH for this user (`which uv`).
+ExecStart=/usr/local/bin/uv run main.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
