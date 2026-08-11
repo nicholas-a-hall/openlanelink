@@ -39,17 +39,19 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 - Lane-local game state
 - REST/WebSocket API
 - Bowler and overhead UIs
-
-**In progress**
 - Camera pin detection
 - UART Bridge integration
 
+**In progress**
+- Complete foul/speed integration
+- Production field testing
 
 **To-do**
 - Node health monitoring
 - Dynamic gateway discovery
-- Complete foul/speed integration
-- Production field testing
+- Optimize pinsetter & gateway firmware
+- Performance improvements & reliability upgrades, vision service
+
 
 ## Requirements
 
