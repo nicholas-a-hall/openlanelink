@@ -64,6 +64,10 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 
 ![Architecture Overview]({{ '/assets/architecture-overview.svg' | relative_url }})
 
+![Critical path diagram]({{ '/assets/critical-path.svg' | relative_url }})
+
+Every major component service and its current implementation status. **Green** is implemented and tested, **gold** is in progress or awaiting verification, **blue** is future work.
+
 - **Transport, last hop**: ESPNow primary, RS-485 wired fallback. These are orthogonal failure axes — RS-485 isn't a degraded ESPNow, it's a second physical path.
 - **Per-lane compute**: Raspberry Pi. Runs the lane's local state machine, redis, and MQTT client. This is the box that keeps the lane alive if the site bus goes down.
 - **Site message bus**: Redis Streams, unified from lane-local through site aggregation.
