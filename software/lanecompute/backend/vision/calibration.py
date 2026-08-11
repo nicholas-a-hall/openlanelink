@@ -26,6 +26,20 @@ so any of them can still be shrunk or grown on its own afterwards.
 Saves the reference frame + per-pin ROI centers/radii to a JSON file that
 pinfall.py loads at detection time.
 
+REQUIRES THE VISION DAEMON. This tool never opens a capture device itself
+-- every frame comes from pinfall.py's GET /frame/{camera_index} (see that
+endpoint's docstring for why all three of pinfall/calibration/debug_view
+share one stream). So the daemon has to be running before you calibrate.
+That's deliberate rather than a limitation worked around with a fallback:
+if the daemon can't start, the lane can't score anyway, so a calibration
+tool that quietly kept working against a device the daemon couldn't hold
+would just produce a reference frame captured under different camera
+settings than detection will ever see.
+
+Because the reference is captured through the daemon's stream, it also
+bakes in whatever exposure settings that daemon was started with -- if
+VISION_AUTO_EXPOSURE/VISION_EXPOSURE change later, recalibrate.
+
 Usage:
     uv run calibration.py --lane 7                # prompts if more than one camera is detected
     uv run calibration.py --lane 7 --camera 0      # or pick one explicitly, no prompt
@@ -34,48 +48,95 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+import httpx
+import numpy as np
 
 import cv2
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "calibration"
 DEFAULT_ROI_RADIUS_PX = 18
-MAX_CAMERA_PROBE_INDEX = 8
 PIN_ORDER = list(range(1, 11))  # click order: pin 1 through pin 10
 
 
-def probe_camera(index: int, warmup_reads: int = 3):
-    """Opens one camera index and returns a captured frame if it actually
-    produces one, else None. isOpened() alone isn't trustworthy for
-    "is anything really there" -- some backends report an index as open
-    even with no device attached, so an actual successful read is what
-    counts."""
-    cap = cv2.VideoCapture(index)
+VISION_URL = os.environ.get("VISION_URL", "http://localhost:8200")
+
+# Generous because a cold camera index costs the daemon a device open plus
+# its warm-up frames before the first frame exists (pinfall.py's
+# FIRST_FRAME_TIMEOUT_S covers the same wait on its side).
+FRAME_FETCH_TIMEOUT_S = float(os.environ.get("VISION_FRAME_FETCH_TIMEOUT_S", "10.0"))
+
+
+class DaemonUnreachableError(RuntimeError):
+    """The daemon isn't answering at all. Deliberately distinct from
+    CameraUnavailableError so probing can't collapse "the vision service is
+    down" into "no cameras found" -- those want completely different
+    actions from the operator, and the second one sends them hunting for a
+    cable that's fine."""
+
+
+class CameraUnavailableError(RuntimeError):
+    """The daemon is up but can't get frames from this camera index."""
+
+
+# One reused connection, not httpx.get() per call. This is not a
+# micro-optimisation: building a fresh client per request measured ~2070ms
+# on Windows (connection setup, before a single byte of frame moves),
+# against 7.5ms for a jpeg frame over a warm connection. Per-call clients
+# made the preview loops in this module and debug_view.py run at well
+# under 1 fps and looked exactly like a slow camera.
+_client = httpx.Client(timeout=FRAME_FETCH_TIMEOUT_S)
+
+
+def fetch_frame(camera_index: int, fmt: str = "png") -> np.ndarray:
+    """Pulls one grayscale frame from the daemon. png (default) is
+    lossless and is what a saved reference frame must come from; jpeg is
+    for preview loops, where PNG's ~34ms encode per frame is the limiting
+    cost. See pinfall.py's /frame endpoint for why frames come from there
+    rather than from a device this process opens."""
+    url = f"{VISION_URL.rstrip('/')}/frame/{camera_index}"
     try:
-        if not cap.isOpened():
-            return None
-        for _ in range(warmup_reads):
-            ok, frame = cap.read()
-            if ok:
-                return frame
-        return None
-    finally:
-        cap.release()
+        resp = _client.get(url, params={"format": fmt})
+    except httpx.HTTPError as e:
+        raise DaemonUnreachableError(
+            f"vision daemon unreachable at {VISION_URL} ({e}) -- it must be running, see this module's docstring"
+        ) from e
+    if resp.status_code == 503:
+        raise CameraUnavailableError(f"camera index {camera_index} is not producing frames: {resp.text}")
+    resp.raise_for_status()
+    frame = cv2.imdecode(np.frombuffer(resp.content, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if frame is None:
+        raise CameraUnavailableError(f"could not decode frame returned for camera index {camera_index}")
+    return frame
 
 
-def list_cameras(max_index: int = MAX_CAMERA_PROBE_INDEX) -> list[dict]:
-    found = []
-    for index in range(max_index):
-        frame = probe_camera(index)
-        if frame is not None:
-            h, w = frame.shape[:2]
-            found.append({"index": index, "width": w, "height": h})
-    return found
+def list_cameras() -> list[dict]:
+    """The daemon's startup camera enumeration, as {index, width, height}.
+
+    This process does no probing of its own. It used to walk indices 0..8
+    asking the daemon for a frame from each, which was wrong twice over:
+    every absent index cost a full FIRST_FRAME_TIMEOUT_S
+    before it gave up (so listing cameras took the better part of a
+    minute), and an index that opens without ever delivering a frame --
+    common on Windows -- still got offered to the operator as a real
+    choice. The daemon already answers this correctly at startup, before
+    it holds any device, so ask it. See pinfall.py's probe_cameras()."""
+    url = f"{VISION_URL.rstrip('/')}/cameras"
+    try:
+        resp = _client.get(url)
+    except httpx.HTTPError as e:
+        raise DaemonUnreachableError(
+            f"vision daemon unreachable at {VISION_URL} ({e}) -- it must be running, see this module's docstring"
+        ) from e
+    resp.raise_for_status()
+    return resp.json()["cameras"]
 
 
-def find_camera(max_index: int = MAX_CAMERA_PROBE_INDEX) -> int:
+def find_camera() -> int:
     """Returns the first working camera index. Raises if none is found --
     callers should tell the operator to plug one in and pick an explicit
     --camera rather than silently guessing. Kept as a standalone
@@ -83,13 +144,13 @@ def find_camera(max_index: int = MAX_CAMERA_PROBE_INDEX) -> int:
     automated/headless caller -- or the configuration UI this is meant to
     grow into, see choose_camera()'s docstring -- may want "just give me
     a camera" without a terminal prompt in the loop."""
-    cameras = list_cameras(max_index)
+    cameras = list_cameras()
     if not cameras:
-        raise RuntimeError(f"no working camera found (probed indices 0..{max_index - 1})")
+        raise RuntimeError("the vision daemon found no working cameras -- check that one is plugged in, then restart the daemon so it re-probes")
     return cameras[0]["index"]
 
 
-def choose_camera(max_index: int = MAX_CAMERA_PROBE_INDEX) -> int:
+def choose_camera() -> int:
     """Lists detected cameras and, if more than one is found, prompts the
     operator to pick one interactively rather than silently defaulting to
     the first (find_camera()'s behavior) -- guessing wrong on a machine
@@ -105,9 +166,9 @@ def choose_camera(max_index: int = MAX_CAMERA_PROBE_INDEX) -> int:
     returns exactly the {index, width, height} data such a UI would want,
     this function's terminal input() loop is the part that wouldn't
     carry over."""
-    cameras = list_cameras(max_index)
+    cameras = list_cameras()
     if not cameras:
-        raise RuntimeError(f"no working camera found (probed indices 0..{max_index - 1})")
+        raise RuntimeError("the vision daemon found no working cameras -- check that one is plugged in, then restart the daemon so it re-probes")
     if len(cameras) == 1:
         return cameras[0]["index"]
 
@@ -250,10 +311,18 @@ class _ClickCollector:
 
 def capture_reference_frame(camera_index: int):
     """Live preview until the operator confirms the deck is empty and
-    presses SPACE, freezing that frame as the reference. A few warm-up
-    reads first let the webcam's auto-exposure/auto-white-balance settle
-    -- the first frame or two off a freshly opened VideoCapture is often
-    visibly darker/off-color than steady state.
+    presses SPACE, then fetches the frame that gets saved as the reference.
+    Frames come from the daemon's stream, not a device opened here -- see
+    this module's docstring and pinfall.py's /frame endpoint. No warm-up
+    loop anymore: the daemon's stream is already running and settled by the
+    time this asks it for anything.
+
+    The preview polls jpeg but the returned reference is re-fetched as
+    png. That's the one place the distinction matters: every later
+    detection is a ratio against this frame's per-pin brightness, so it has
+    to be exactly what the camera produced, not a re-encode of it. The
+    extra fetch costs one frame's latency on an empty deck where nothing is
+    moving, so the operator gets what they were looking at.
 
     Returns grayscale, not the camera's native color frame: detection
     (pinfall.py) is a brightness-only comparison and never looks at color
@@ -263,21 +332,10 @@ def capture_reference_frame(camera_index: int):
     than a full-color one. The preview window itself is converted back to
     BGR only so the on-screen instructions can be drawn in color (see
     below) -- that's a display-only copy, not what's captured/returned."""
-    cap = cv2.VideoCapture(camera_index)
-    if not cap.isOpened():
-        raise RuntimeError(f"could not open camera index {camera_index}")
-
-    for _ in range(10):
-        cap.read()
-
     window = "openlanelink calibration - reference frame"
-    frame_gray = None
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                raise RuntimeError("camera read failed during preview")
-            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame_gray = fetch_frame(camera_index, "jpeg")
             preview = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2BGR)
             cv2.putText(
                 preview, "Empty, fully-racked deck? Press SPACE to capture, q to quit",
@@ -286,13 +344,11 @@ def capture_reference_frame(camera_index: int):
             cv2.imshow(window, preview)
             key = cv2.waitKey(1) & 0xFF
             if key == ord(" "):
-                break
+                return fetch_frame(camera_index, "png")
             if key == ord("q"):
                 sys.exit("calibration aborted")
     finally:
-        cap.release()
         cv2.destroyWindow(window)
-    return frame_gray
 
 
 def collect_pin_clicks(frame, default_radius: int = DEFAULT_ROI_RADIUS_PX):
@@ -369,7 +425,7 @@ def main():
     if args.list_cameras:
         cameras = list_cameras()
         if not cameras:
-            print(f"no cameras detected (probed indices 0..{MAX_CAMERA_PROBE_INDEX - 1})")
+            print("no cameras detected by the vision daemon -- plug one in and restart it so it re-probes")
         for cam in cameras:
             print(f"  index {cam['index']}: {cam['width']}x{cam['height']}")
         return

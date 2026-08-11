@@ -42,13 +42,21 @@ corrupted the game's scoresheet instead of vision just staying stateless
 and letting the one place that actually knows "what ball is this" do that
 part.
 
-**Not yet decided/built:** what triggers a capture. For now, `/capture/{lane}`
-is a manually-triggered endpoint (curl, a bench script, `--once`) — there is
-no automatic wiring to the beam sensors yet. When that gets built, the plan
-is for vision to become its own independent client of the uart_bridge
-service's WS `/events` feed (the same feed `state_machine` reads) and
-self-trigger off the downstream speed-beam break plus its own cooldown —
-not something `state_machine` calls into, keeping the standalone boundary.
+**Self-triggering (2026-08-07):** `bridge_client.py` makes this daemon its
+own independent client of the uart_bridge service's WS `/events` feed (the
+same feed `state_machine` reads) — it watches for a downstream
+ball-detection beam break (from a `speed_node` today, or a future
+`ball_detect_node`; see that module's docstring for how the two are told
+apart) and self-triggers a capture after `VISION_CAPTURE_DELAY_S` (default
+2.5s, letting the ball reach the pins and settle), gated by
+`VISION_TRIGGER_COOLDOWN_S` (default 5.0s) per lane so a bounced beam or
+overlapping node coverage can't double-fire. This is NOT something
+`state_machine` or `uart_bridge` calls into — vision is the side that
+depends on knowing when a ball was detected, so it owns the client glue,
+keeping the standalone boundary (see `../state_machine/main.py`'s
+`on_beam_event()` comment, which explicitly disclaims triggering vision).
+`/capture/{lane}` remains available for manual/bench triggering regardless
+(curl, a bench script, `--once`).
 
 ## Approach
 
@@ -112,6 +120,11 @@ captured/compared arrays stay single-channel throughout.
   `fallenPins` (the two lists of pin numbers, decoded from the mask for
   convenience -- `fallenPins` here just means "not standing right now,"
   not "fell on this specific ball").
+- `bridge_client.py` — WS client of uart_bridge's `/events` feed; drives
+  `pinfall.py`'s self-triggered capture off ball-detection beam events (see
+  "Self-triggering" above). Trimmed compared to
+  `../state_machine/bridge_client.py` -- vision only ever consumes events
+  off the bridge, it never issues commands to it.
 - `debug_view.py` — live camera view with the calibrated pins overlaid:
   each pin's ROI circle (green=standing, red=fallen) plus its current
   brightness vs. cutoff (`current/cutoff`), refreshed every frame. Reads
@@ -139,11 +152,19 @@ Single manual capture, no server, prints the result:
 uv run pinfall.py --lane 7 --once
 ```
 
-Run the daemon (manual/bench triggering only for now — see above):
+Run the daemon (self-triggers off ball-detection beam events -- see
+"Self-triggering" above -- in addition to manual/bench triggering):
 ```
 uv run pinfall.py
 ```
-Then, e.g.:
+Config is via environment variables (all optional, defaults shown):
+```
+STATE_MACHINE_URL=http://localhost:8000
+UART_BRIDGE_URL=http://localhost:8100
+VISION_CAPTURE_DELAY_S=2.5
+VISION_TRIGGER_COOLDOWN_S=5.0
+```
+Manual capture still works the same as before, e.g.:
 ```
 curl -X POST http://localhost:8200/capture/7
 ```

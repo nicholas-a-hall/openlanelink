@@ -8,6 +8,13 @@ Not part of the actual detection path (pinfall.py) or the calibration
 tool (calibration.py) -- this only reads an existing calibration and
 displays what pinfall.py's detect_standing_mask() would currently see.
 
+REQUIRES THE VISION DAEMON, same as calibration.py and for the same
+reason: frames come from its GET /frame/{camera_index} rather than from a
+device opened here, so this shows the exact frames detection is working
+from. A separately-opened device would have its own exposure state, which
+would make this overlay a plausible-looking view of something detection
+never sees -- the worst possible failure for a diagnostic tool.
+
 Usage:
     uv run debug_view.py --lane 7
 """
@@ -17,7 +24,7 @@ import argparse
 import cv2
 import numpy as np
 
-from calibration import DEFAULT_OUTPUT_DIR, load_calibration
+from calibration import DEFAULT_OUTPUT_DIR, fetch_frame, list_cameras, load_calibration
 from pinfall import DEFAULT_BRIGHTNESS_RATIO, crop_roi, normalize_brightness
 
 STANDING_COLOR = (0, 255, 0)
@@ -32,19 +39,31 @@ def main():
     args = parser.parse_args()
 
     calib, reference_gray = load_calibration(args.lane, args.output_dir)
-    baselines = {pin.pin: float(np.mean(crop_roi(reference_gray, pin))) for pin in calib.pins}
 
-    cap = cv2.VideoCapture(calib.camera_index)
-    if not cap.isOpened():
-        raise RuntimeError(f"could not open camera index {calib.camera_index}")
+    # Checked up front against the daemon's own enumeration rather than
+    # discovered one failed frame at a time. A calibration records the
+    # camera index it was made against, so pointing this at a daemon that
+    # doesn't have that camera -- a lane calibration opened on a laptop, a
+    # camera not plugged in yet -- otherwise just spins on 503s with
+    # nothing saying which camera is missing or which ones exist.
+    available = {cam["index"] for cam in list_cameras()}
+    if calib.camera_index not in available:
+        raise SystemExit(
+            f"lane {args.lane} is calibrated against camera index {calib.camera_index}, "
+            f"which the vision daemon does not have (it found: {sorted(available) or 'none'}). "
+            f"Point VISION_URL at the daemon that owns that camera, or recalibrate this lane."
+        )
+
+    baselines = {pin.pin: float(np.mean(crop_roi(reference_gray, pin))) for pin in calib.pins}
 
     window = f"openlanelink vision - lane {args.lane} live overlay"
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                continue
-            frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # jpeg, not png: this is a live view, and q90 shifts a pin's
+            # mean brightness by under 0.1 against a ~90-unit standing/
+            # fallen margin, so the verdicts shown still match what
+            # detection would decide on the raw frame.
+            frame_gray = fetch_frame(calib.camera_index, "jpeg")
             normalized = normalize_brightness(frame_gray, reference_gray)
 
             # Color overlay drawn on a BGR copy of the (grayscale) live
@@ -75,7 +94,6 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
-        cap.release()
         cv2.destroyWindow(window)
 
 
