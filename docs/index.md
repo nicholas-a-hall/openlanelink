@@ -62,8 +62,6 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 
 ## Architecture overview
 
-![Architecture Overview]({{ '/assets/architecture-overview.svg' | relative_url }})
-
 ![Critical path diagram]({{ '/assets/critical-path.svg' | relative_url }})
 
 Every major component service and its current implementation status. **Green** is implemented and tested, **gold** is in progress or awaiting verification, **blue** is future work.
