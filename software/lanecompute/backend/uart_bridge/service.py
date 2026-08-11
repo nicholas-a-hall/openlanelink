@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+import protocol as p
+
 log = logging.getLogger(__name__)
 
 # No frame heard within this long while the port is open is treated as
@@ -85,7 +87,7 @@ def on_beam_event(ev) -> None:
 
 
 def on_status_event(ev) -> None:
-    _broadcast({"type": "statusEvent", "statusCode": ev.status_code, "laneNumber": ev.lane_number, "timestampMs": ev.timestamp_ms})
+    _broadcast({"type": "statusEvent", "statusCode": ev.status_code, "laneNumber": ev.lane_number, "ballNumber": ev.ball_number, "timestampMs": ev.timestamp_ms})
 
 
 # ---- health ----
@@ -138,30 +140,37 @@ def _require_link() -> None:
 class PinsetterCommandBody(BaseModel):
     command: int
     lane_number: int
+    cycle_count: int = 1  # only meaningful for CMD_CYCLE/CMD_RERACK, see protocol.py
 
 
 @app.post("/commands/pinsetter")
 async def send_pinsetter_command(body: PinsetterCommandBody):
     _require_link()
-    link.send_pinsetter_command(body.command, body.lane_number)
+    link.send_pinsetter_command(body.command, body.lane_number, body.cycle_count)
     return {"ok": True}
 
 
 class LaneBody(BaseModel):
     lane_number: int
+    cycle_count: int = 1
 
 
 @app.post("/commands/cycle")
 async def cycle(body: LaneBody):
     _require_link()
-    link.send_cycle(body.lane_number)
+    link.send_cycle(body.lane_number, body.cycle_count)
     return {"ok": True}
 
 
+class RerackBody(BaseModel):
+    lane_number: int
+    cycle_count: int = 2  # matches SerialLink.send_rerack()'s own safe default
+
+
 @app.post("/commands/rerack")
-async def rerack(body: LaneBody):
+async def rerack(body: RerackBody):
     _require_link()
-    link.send_rerack(body.lane_number)
+    link.send_rerack(body.lane_number, body.cycle_count)
     return {"ok": True}
 
 
@@ -177,3 +186,30 @@ async def score_event(body: ScoreEventBody):
     _require_link()
     link.send_score_event(body.lane_number, body.ball_number, body.pinfall_mask, body.timestamp_ms)
     return {"ok": True}
+
+
+# ---- bench-only event injection ----
+class DebugBeamEventBody(BaseModel):
+    lane_number: int
+    beam_role: int = p.ROLE_DOWNSTREAM
+    event_type: int = p.EVENT_BEAM_BROKEN
+
+
+@app.post("/debug/beam-event")
+async def debug_beam_event(body: DebugBeamEventBody):
+    """Bench/dev only: publish a synthetic BeamEvent on the /events feed
+    exactly as a real decoded frame would, WITHOUT any hardware attached.
+    Touches nothing on the serial link -- it only broadcasts, so the
+    gateway/mesh never sees it and no pinsetter command results.
+
+    Exists because the downstream-beam break is the trigger every
+    beam-driven consumer keys off (../vision's self-triggered capture, see
+    its bridge_client.py; state_machine's BALL_IN_FLIGHT/AWAITING_PINFALL
+    transitions), and until a real speed_node/ball_detect_node is wired up
+    there was no way to exercise those paths end to end at all. Defaults
+    match "a ball just reached the pins" (downstream beam, BROKEN edge),
+    which is the case worth replaying most often."""
+    ev = p.BeamEvent(body.event_type, body.lane_number, body.beam_role, int(time.monotonic() * 1000) % (2 ** 32))
+    log.info("injecting synthetic BeamEvent: %s", ev)
+    on_beam_event(ev)
+    return {"ok": True, "injected": {"eventType": ev.event_type, "laneNumber": ev.lane_number, "beamRole": ev.beam_role, "timestampMs": ev.timestamp_ms}}

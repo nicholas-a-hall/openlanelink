@@ -54,14 +54,18 @@ class BridgeClient:
         return self._reachable and self._uart_connected
 
     # ---- outbound (sync, called from route handlers / state_machine.py) ----
-    def send_pinsetter_command(self, command: int, lane_number: int) -> None:
-        self._post("/commands/pinsetter", {"command": command, "lane_number": lane_number})
+    def send_pinsetter_command(self, command: int, lane_number: int, cycle_count: int = 1) -> None:
+        self._post("/commands/pinsetter", {"command": command, "lane_number": lane_number, "cycle_count": cycle_count})
 
-    def send_cycle(self, lane_number: int) -> None:
-        self.send_pinsetter_command(p.CMD_CYCLE, lane_number)
+    def send_cycle(self, lane_number: int, cycle_count: int = 1) -> None:
+        self.send_pinsetter_command(p.CMD_CYCLE, lane_number, cycle_count)
 
-    def send_rerack(self, lane_number: int) -> None:
-        self.send_pinsetter_command(p.CMD_RERACK, lane_number)
+    def send_rerack(self, lane_number: int, cycle_count: int = 2) -> None:
+        # Defaults to 2 (safe "sweep + spot fresh") for callers with no
+        # real ball-state-derived count. state_machine.py's on_foul()/
+        # _record_ball() always pass an explicit count derived from the
+        # pinsetter's own reported ball number -- see LaneStateMachine.
+        self.send_pinsetter_command(p.CMD_RERACK, lane_number, cycle_count)
 
     def send_score_event(self, lane_number: int, ball_number: int, pinfall_mask: int, timestamp_ms: int) -> None:
         self._post(

@@ -75,14 +75,20 @@ class SerialLink:
             return False
 
     # ---- outbound (Pi -> gateway) ----
-    def send_pinsetter_command(self, command: int, lane_number: int):
-        self._send_frame(p.UART_PINSETTER_COMMAND, p.encode_pinsetter_command(command, lane_number))
+    def send_pinsetter_command(self, command: int, lane_number: int, cycle_count: int = 1):
+        self._send_frame(p.UART_PINSETTER_COMMAND, p.encode_pinsetter_command(command, lane_number, cycle_count))
 
-    def send_cycle(self, lane_number: int):
-        self.send_pinsetter_command(p.CMD_CYCLE, lane_number)
+    def send_cycle(self, lane_number: int, cycle_count: int = 1):
+        self.send_pinsetter_command(p.CMD_CYCLE, lane_number, cycle_count)
 
-    def send_rerack(self, lane_number: int):
-        self.send_pinsetter_command(p.CMD_RERACK, lane_number)
+    def send_rerack(self, lane_number: int, cycle_count: int = 2):
+        # Defaults to 2 (the safe "sweep + spot fresh" option) if a caller
+        # doesn't have a real ball-state-derived count to give -- matches
+        # the gateway bench console's own rerack default. Callers with real
+        # game state (state_machine.py's on_foul()/_record_ball()) always
+        # pass an explicit count derived from the pinsetter's own reported
+        # ball number.
+        self.send_pinsetter_command(p.CMD_RERACK, lane_number, cycle_count)
 
     def send_score_event(self, lane_number: int, ball_number: int, pinfall_mask: int, timestamp_ms: int):
         self._send_frame(
@@ -98,7 +104,15 @@ class SerialLink:
         length = len(payload)
         frame = bytes([p.FRAME_START, length]) + payload + bytes([_checksum(length, payload)])
         try:
-            self._ser.write(frame)
+            _t0 = time.perf_counter()
+            n = self._ser.write(frame)
+            _dt = time.perf_counter() - _t0
+            # Timing is logged because a stalled write is otherwise invisible
+            # -- the HTTP route still returns 200 and the frame still goes
+            # out, it just takes seconds, which shows up to a user only as
+            # "the pinsetter reacts late" with nothing in any log to explain
+            # it. See README.md's note on first-write-after-idle stalls.
+            log.info("wrote outbound frame (msgType=0x%02x, %d bytes, write took %.3fs): %s", msg_type, n, _dt, frame.hex())
         except serial.SerialException as e:
             log.warning("UART write failed: %s -- marking disconnected", e)
             self._ser = None

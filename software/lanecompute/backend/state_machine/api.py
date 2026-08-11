@@ -18,6 +18,7 @@ README.md) at startup; without it, mesh-facing endpoints 503.
 """
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -31,9 +32,15 @@ import state_machine
 
 log = logging.getLogger(__name__)
 
-# The two lanes this compute node covers -- must match the paired gateway's
-# lane-pair scope (see firmware/HANDOFF.md's lane-preset design principle).
-VALID_LANES = (7, 8)
+# The lanes this compute node instance covers -- must match whatever lane
+# numbers the fouling/speed/pinsetter nodes on this mesh actually use. The
+# gateway itself has no notion of "its" lanes (it's a dumb relay -- lane
+# numbers are stamped in by the leaf nodes, see firmware/gateway_node.ino);
+# this is purely this Pi process's own config, kept in sync by hand with
+# whatever's flashed onto the leaf nodes it's paired with. Comma-separated
+# via LANE_NUMBERS so a different lane pair/house size is a config change,
+# not a code change -- e.g. LANE_NUMBERS=3,4.
+VALID_LANES = tuple(int(n) for n in os.environ.get("LANE_NUMBERS", "7,8").split(","))
 
 app = FastAPI(title="openlanelink compute node API", version="0.1.0")
 
@@ -339,9 +346,9 @@ async def report_beam(lane: int, body: BeamObserved):
 async def report_foul(lane: int):
     """Foul-line sensor edge -- stands in for a fouling node's
     MSG_LANE_EVENT{LANE_FOUL} (main.py's on_lane_event does the same for the
-    real hardware path). Records a 0-pinfall ball without sending a
-    pinsetter command -- the gateway already auto-reracks on every foul, see
-    state_machine.py's on_foul."""
+    real hardware path). Records a 0-pinfall ball and sends the pinsetter
+    rerack itself -- see state_machine.py's on_foul (the gateway no longer
+    auto-reracks on its own)."""
     _require_valid_lane(lane)
     machine = state_machine.get_machine(lane, _bridge_object())
     try:

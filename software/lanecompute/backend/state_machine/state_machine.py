@@ -20,13 +20,22 @@ import game_state
 
 log = logging.getLogger(__name__)
 
+# A single trip over the foul line produces several debounced FOUL edges in
+# quick succession (stumble, scramble up, beam re-broken) -- this used to be
+# suppressed on the gateway via its own per-lane cooldown timer, independent
+# of any real game state. That was a scoring-relevant decision ("how many
+# balls does this one physical trip actually affect") being made by hardware
+# with no notion of whose ball it is, so it now lives here instead -- see
+# on_foul(). TUNE ON REAL HARDWARE (matches the gateway's old default).
+FOUL_COOLDOWN_S = 0.75
+
 
 class State(Enum):
     IDLE = auto()              # no game started yet
     READY = auto()              # waiting for the current bowler's ball
     BALL_IN_FLIGHT = auto()     # upstream beam broken, waiting on the downstream beam or a foul
     AWAITING_PINFALL = auto()   # ball reached the pins, waiting on a pinfall count
-    PINSETTER_BUSY = auto()     # cycle/rerack in flight (Pi-sent or gateway auto-rerack-on-foul), waiting on STATUS_CYCLE_COMPLETE
+    PINSETTER_BUSY = auto()     # cycle/rerack in flight (Pi-sent), waiting on STATUS_CYCLE_COMPLETE
     GAME_COMPLETE = auto()      # every bowler has finished all 10 frames
 
 
@@ -43,6 +52,19 @@ class LaneStateMachine:
         self._bridge = bridge
         self.state = State.IDLE
         self.current_bowler_idx = 0
+        self._last_foul_at: float | None = None
+        # The pinsetter's own last-reported ball (1 or 2) for this lane, from
+        # StatusEvent.ball_number (MSG_STATUS's MachineRecord.flags ball
+        # bit) -- see reconcile_ball_number(). None until a status event
+        # with real ball data has arrived for this lane.
+        self._reported_ball: int | None = None
+        # How many more STATUS_CYCLE_COMPLETE events are still expected
+        # before the pinsetter is actually done -- a rerack can take 2
+        # sequenced solenoid pulses (see _rerack_cycle_count()), each
+        # producing its OWN STATUS_CYCLE_COMPLETE, not one for the whole
+        # rerack. Set whenever a command is sent (_record_ball), consumed
+        # in on_cycle_complete().
+        self._pending_cycle_completes = 0
 
     # ---- lifecycle ----
     def begin_game(self) -> None:
@@ -89,17 +111,37 @@ class LaneStateMachine:
         self.state = State.AWAITING_PINFALL
 
     def on_foul(self) -> None:
-        """A foul can land anywhere between READY and AWAITING_PINFALL -- the
+        """USBC Rule 9. A foul counts as a ball delivered and scores zero;
+        any pins it knocked down do NOT count and are respotted, so the
+        bowler faces a full fresh rack for whatever they throw next. On
+        ball 1 that means the frame stays open and they throw ball 2 at ten
+        pins (clearing all ten there is a SPARE, not a strike -- score_game
+        already derives that correctly from the recorded [0, 10]); on ball
+        2 the frame simply ends. Both cases want the same thing from the
+        pinsetter -- a full fresh rack -- which is force_rerack below.
+
+        pin_mask=0 is the point of the explicit argument: "zero counting
+        pins fell, so all ten are standing for the next ball." Recording
+        None instead (as this used to) means "unknown", which makes
+        game_state.standing_mask_before_next_ball() return None and leaves
+        vision unable to score the REST of the frame after any foul -- it
+        has no baseline to diff its observation against. A foul is one of
+        the few events where the resulting pin state is known exactly
+        rather than observed, so it should be recorded, not left unknown.
+
+        A foul can land anywhere between READY and AWAITING_PINFALL (the
         bowler can cross the line before, during, or after the ball's
-        flight. The gateway already auto-reracks on every foul edge
-        (firmware/HANDOFF.md's FOUL_COOLDOWN_MS logic), so the Pi does not
-        also send a redundant command -- but it still records the ball as a
-        0 and waits for the same STATUS_CYCLE_COMPLETE before the next ball,
-        since the rack really is in motion regardless of who triggered it."""
+        flight). FOUL_COOLDOWN_S collapses one physical trip's several
+        debounced edges into exactly one recorded ball."""
         if self.state not in (State.READY, State.BALL_IN_FLIGHT, State.AWAITING_PINFALL):
             log.warning("Lane %s: foul in state %s, ignored", self.lane_number, self.state.name)
             return
-        self._record_ball(pinfall=0, send_command=False)
+        now = time.monotonic()
+        if self._last_foul_at is not None and now - self._last_foul_at < FOUL_COOLDOWN_S:
+            log.info("Lane %s: foul within cooldown, ignored", self.lane_number)
+            return
+        self._last_foul_at = now
+        self._record_ball(pinfall=0, send_command=True, pin_mask=0, force_rerack=True)
 
     def on_pinfall_observed(self, pinfall: int | None = None, standing_mask: int | None = None) -> None:
         """Called from api.py's POST /api/lanes/{lane}/pinfall. Exactly one
@@ -157,28 +199,40 @@ class LaneStateMachine:
         return bin(fallen_mask).count("1"), fallen_mask
 
     def on_cycle_complete(self) -> None:
+        """Fires once per individual solenoid pulse the pinsetter finishes,
+        NOT once per rerack -- a rerack can be 2 sequenced pulses (see
+        _rerack_cycle_count()), each sending its own STATUS_CYCLE_COMPLETE.
+        Only the last expected one actually clears PINSETTER_BUSY; treating
+        the first as "done" would mark the lane ready for a new ball while
+        the pinsetter is still physically mid-rerack."""
         if self.state != State.PINSETTER_BUSY:
             log.warning("Lane %s: cycle complete in state %s, ignored", self.lane_number, self.state.name)
+            return
+        self._pending_cycle_completes = max(0, self._pending_cycle_completes - 1)
+        if self._pending_cycle_completes > 0:
+            log.info("Lane %s: cycle complete, %d more expected before ready", self.lane_number, self._pending_cycle_completes)
             return
         self.state = State.GAME_COMPLETE if self._all_bowlers_done() else State.READY
 
     def reconcile_ball_number(self, hardware_ball_number: int) -> None:
-        """Cross-checks a hardware-reported ball number (StatusEvent.
-        ball_number -- the pinsetter's own MachineRecord.flags ball bit,
-        see protocol.py's StatusEvent docstring for why this is None on
-        every event today) against what this machine already tracks from
-        the recorded ball history. Self-tracking stays authoritative
-        either way -- this never changes state or scoring, only logs a
-        mismatch. A disagreement here would mean either self-tracking
-        drifted (a real bug) or the hardware's own notion is stale (also
-        worth knowing), so it's a signal to investigate, not something to
-        resolve by silently trusting one side over the other. Call sites
-        should only call this when hardware_ball_number is not None
-        (main.py's on_status_event does) -- with nothing decoding/
-        forwarding it yet, this is currently unreachable in practice, not
-        because the logic is unfinished but because there's nothing to
-        call it with; no further changes will be needed here once
-        uart_bridge starts sending it."""
+        """Records the pinsetter's own hardware-reported ball number
+        (StatusEvent.ball_number -- MSG_STATUS's MachineRecord.flags ball
+        bit, forwarded end-to-end as of 2026-08-07) as self._reported_ball
+        -- this is now the ground truth _rerack_cycle_count() uses to
+        decide how many solenoid cycles a rerack needs, replacing logic
+        that used to live in pinsetter_node.ino's execRerack() (which
+        derived it from the SAME counter locally instead, a decision that
+        belongs here since this is the process with real game state).
+        Scoring/turn-tracking itself (ls.current_ball_number(), whose
+        turn it is) is untouched -- that stays entirely self-tracked from
+        recorded ball history, independent of the pinsetter's own belief.
+        Still cross-checks and logs a mismatch, same as before: a
+        disagreement means either self-tracking drifted (a real bug) or
+        the pinsetter's local toggle desynced (e.g. cycled from its own
+        button -- see MachineState.ball's comment in pinsetter_node.ino),
+        either way worth surfacing loudly rather than silently picking a
+        side."""
+        self._reported_ball = hardware_ball_number
         ls = self._lane()
         bowler_id = self._current_bowler_id()
         if bowler_id is None:
@@ -231,7 +285,21 @@ class LaneStateMachine:
             return True
         return all(self._bowler_done(ls, bid) for bid in ls.game.bowler_ids)
 
-    def _record_ball(self, pinfall: int, send_command: bool, pin_mask: int | None = None) -> None:
+    def _rerack_cycle_count(self) -> int:
+        """How many solenoid cycles get the pinsetter from its own
+        last-reported position (self._reported_ball, see
+        reconcile_ball_number()) to a fresh full rack -- ported from
+        pinsetter_node.ino's old execRerack() logic, which used to make
+        this same 1-vs-2 decision locally from its own ball counter (see
+        firmware/HANDOFF.md's "Next" list). 1 cycle if the pinsetter last
+        reported ball 2; 2 cycles (sweep the standing rack, then spot
+        fresh) for ball 1 OR when nothing's been reported yet -- matching
+        the pinsetter's own prior default (MachineState boots assuming
+        ball 1), so an unreported machine still gets a real fresh rack
+        rather than an under-cycled one."""
+        return 1 if self._reported_ball == 2 else 2
+
+    def _record_ball(self, pinfall: int, send_command: bool, pin_mask: int | None = None, force_rerack: bool = False) -> None:
         ls = self._lane()
         bowler_id = self._current_bowler_id()
         if bowler_id is None:
@@ -241,10 +309,16 @@ class LaneStateMachine:
         turn_over, ball_number = self._current_frame_status(ls, bowler_id)
 
         if send_command:
-            if turn_over:
-                self._bridge.send_rerack(self.lane_number)
+            if turn_over or force_rerack:
+                cycle_count = self._rerack_cycle_count()
+                self._bridge.send_rerack(self.lane_number, cycle_count)
             else:
-                self._bridge.send_cycle(self.lane_number)
+                cycle_count = 1
+                self._bridge.send_cycle(self.lane_number, cycle_count)
+            # How many STATUS_CYCLE_COMPLETE events on_cycle_complete()
+            # needs to see before this lane is actually ready again -- see
+            # that method's docstring.
+            self._pending_cycle_completes = cycle_count
 
         if pin_mask is not None:
             # Broadcasts MSG_SCORE_EVENT onto the mesh (PROTOCOL.md) --
@@ -254,7 +328,12 @@ class LaneStateMachine:
             # report. A manual entry's plain count has no mask to put in
             # pinfallMask, and broadcasting a fabricated/zero one would
             # misrepresent it as "no pins fell" rather than "unknown."
-            self._bridge.send_score_event(self.lane_number, ball_number, pin_mask, int(time.time() * 1000))
+            #
+            # monotonic, not time.time(): the wire field is a uint32 millis()
+            # uptime counter (firmware/PROTOCOL.md), so epoch-ms overflowed it
+            # and made every score event fail to encode -- see
+            # protocol.py's encode_score_event().
+            self._bridge.send_score_event(self.lane_number, ball_number, pin_mask, int(time.monotonic() * 1000))
 
         if turn_over:
             self._advance_to_next_active_bowler(ls)

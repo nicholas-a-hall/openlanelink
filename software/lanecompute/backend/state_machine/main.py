@@ -114,6 +114,15 @@ async def on_beam_event(ev):
 
 async def on_status_event(ev):
     log.info("StatusEvent: %s", ev)
+    if ev.lane_number == 0:
+        # Node-level status (STATUS_HEARTBEAT, STATUS_RELAY_FAULT,
+        # STATUS_ALL_ACK, STATUS_MACHINE_STATUS, STATUS_DI_CHANGE -- see
+        # firmware/PROTOCOL.md's laneNumber note) isn't about any one lane,
+        # so it must never reach get_machine()/get_lane() -- doing so would
+        # silently create a phantom "lane 0" machine, exactly the kind of
+        # cross-lane bleed the state machine is supposed to prevent.
+        return
+
     machine = state_machine.get_machine(ev.lane_number, bridge)
     # Always None today -- see protocol.py's StatusEvent docstring for why
     # -- but cross-checking costs nothing and needs no changes here once
@@ -121,7 +130,7 @@ async def on_status_event(ev):
     if ev.ball_number is not None:
         machine.reconcile_ball_number(ev.ball_number)
     if ev.status_code != protocol.STATUS_CYCLE_COMPLETE:
-        return  # other status codes (heartbeat, relay fault, ...) not acted on yet
+        return  # other per-lane status codes (relay ack, pulse ack, ...) not acted on yet
     machine.on_cycle_complete()
     await api.broadcast_state(ev.lane_number)
 

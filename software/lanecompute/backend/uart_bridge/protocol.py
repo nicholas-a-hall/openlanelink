@@ -65,8 +65,8 @@ CMD_STATUS = 5
 # implicit alignment padding the way C does).
 _LANE_EVENT_FMT = "<BB2xI"       # eventType, laneNumber, pad, timestampMs  (8 bytes)
 _BEAM_EVENT_FMT = "<BBBxI"       # eventType, laneNumber, beamRole, pad, timestampMs (8 bytes)
-_STATUS_EVENT_FMT = "<BB2xI"     # statusCode, laneNumber, pad, timestampMs (8 bytes)
-_PINSETTER_COMMAND_FMT = "<BB"   # command, laneNumber (2 bytes, no padding)
+_STATUS_EVENT_FMT = "<BBBxI"     # statusCode, laneNumber, ballNumber, pad, timestampMs (8 bytes)
+_PINSETTER_COMMAND_FMT = "<BBB"  # command, laneNumber, cycleCount (3 bytes, no padding)
 _SCORE_EVENT_FMT = "<BBHI"       # laneNumber, ballNumber, pinfallMask, timestampMs (8 bytes)
 
 LANE_EVENT_SIZE = struct.calcsize(_LANE_EVENT_FMT)
@@ -103,16 +103,37 @@ class StatusEvent:
     status_code: int
     lane_number: int  # 0 for node-level status codes (see PROTOCOL.md)
     timestamp_ms: int
+    # The pinsetter's own reported ball (1 or 2) for lane_number, decoded
+    # from MSG_STATUS's MachineRecord.flags ball bit -- the gateway
+    # extracts and forwards this on every UART_PINSETTER_STATUS frame (see
+    # gateway_node.ino's ballNumberForLane()/forwardStatusToPi()). None for
+    # the wire's 0 sentinel (node-level status, or a lane with no matching
+    # MachineRecord in this particular MSG_STATUS).
+    ball_number: int | None = None
 
     @classmethod
     def decode(cls, payload: bytes) -> "StatusEvent":
-        status_code, lane_number, ts = struct.unpack(_STATUS_EVENT_FMT, payload)
-        return cls(status_code, lane_number, ts)
+        status_code, lane_number, ball_number, ts = struct.unpack(_STATUS_EVENT_FMT, payload)
+        return cls(status_code, lane_number, ts, ball_number or None)
 
 
-def encode_pinsetter_command(command: int, lane_number: int) -> bytes:
-    return struct.pack(_PINSETTER_COMMAND_FMT, command, lane_number)
+def encode_pinsetter_command(command: int, lane_number: int, cycle_count: int = 1) -> bytes:
+    # cycle_count only matters for CMD_CYCLE/CMD_RERACK -- see
+    # gateway_node.ino's sendPinsetterCommand()/PinsetterCommandFromPi.
+    # Defaulted to 1 so callers issuing CMD_POWER_ON/OFF/CMD_STATUS/
+    # CMD_RESPOT don't need to think about it.
+    return struct.pack(_PINSETTER_COMMAND_FMT, command, lane_number, cycle_count)
 
 
 def encode_score_event(lane_number: int, ball_number: int, pinfall_mask: int, timestamp_ms: int) -> bytes:
-    return struct.pack(_SCORE_EVENT_FMT, lane_number, ball_number, pinfall_mask, timestamp_ms)
+    # timestampMs is a uint32 on the wire, and every mesh node fills it with
+    # its own millis() -- an uptime counter that wraps at ~49.7 days, NOT a
+    # Unix epoch timestamp (see firmware/PROTOCOL.md's NodeMessage). Masking
+    # to 32 bits keeps that contract and, importantly, makes it impossible
+    # for a caller passing epoch-ms to blow the whole message up: that used
+    # to raise struct.error inside this service's route handler, so every
+    # single score event 500'd and nothing on the mesh ever saw one -- a
+    # failure that was invisible from state_machine's side, since its
+    # _post() only logs a warning and moves on. Callers should still pass a
+    # monotonic ms value (see state_machine.py's _record_ball).
+    return struct.pack(_SCORE_EVENT_FMT, lane_number, ball_number, pinfall_mask, timestamp_ms & 0xFFFFFFFF)

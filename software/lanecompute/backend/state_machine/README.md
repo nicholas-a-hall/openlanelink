@@ -68,8 +68,12 @@ OpenAPI schema). Summary:
 | `WS` | `/ws/display/{lane}` | — | read-only broadcast (overhead monitor) |
 | `WS` | `/ws/control/{lane}` | — | same broadcast (bowler tablet); commands go through REST above, not this socket |
 
-`VALID_LANES` in `api.py` (currently `(7, 8)`) must match whatever this
-compute node's paired gateway/pinsetter actually cover.
+`VALID_LANES` in `api.py` must match whatever lane numbers the
+fouling/speed/pinsetter nodes on this mesh actually use -- the gateway
+itself is lane-agnostic (a dumb relay; lane numbers are stamped in by the
+leaf nodes, not declared on the gateway), so there's nothing to cross-check
+this against automatically. Configured via `LANE_NUMBERS` (see "Running"
+below), not a code edit.
 
 ## Running
 Dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`), not pip/`requirements.txt`.
@@ -77,13 +81,17 @@ Dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml`
 uv sync
 uv run main.py
 ```
-`../uart_bridge` must be running and reachable for mesh commands to work —
-start it first (see its README.md). Point this service at it via
-`UART_BRIDGE_URL` (default `http://localhost:8100`, correct when both run
-on the same Pi):
+Config is via environment variables (all optional, defaults shown):
 ```
+LANE_NUMBERS=7,8
 UART_BRIDGE_URL=http://localhost:8100
 ```
+`LANE_NUMBERS` is a comma-separated list of the lane numbers this compute
+node instance covers -- must match whatever's actually flashed onto the
+fouling/speed/pinsetter nodes on this mesh (see above). `../uart_bridge`
+must be running and reachable for mesh commands to work -- start it first
+(see its README.md); `UART_BRIDGE_URL` is correct as-is when both run on
+the same Pi.
 This service starts and serves its own API even without the bridge
 reachable — mesh-facing endpoints just 503 until `bridge_client.BridgeClient`
 reports both the bridge service and its UART connection are up (see
