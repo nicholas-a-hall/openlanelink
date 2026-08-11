@@ -6,9 +6,13 @@
 // (in the `code` field) so the gateway knows what it just learned about.
 //
 // Fouling nodes send per-lane MSG_LANE_EVENT (one fouling node can cover
-// several lanes). On a FOUL the gateway tells the pinsetter to RERACK that
-// lane (cycle through to a fresh full rack -- the pinsetter node knows how
-// many cycles that takes).
+// several lanes). The gateway does NOT act on a FOUL itself -- it forwards
+// the raw event to the Pi verbatim, same as any other sensor event, and the
+// Pi (state_machine.py's on_foul()) decides whose ball it is and issues the
+// pinsetter rerack itself via UART_PINSETTER_COMMAND. (Earlier version: the
+// gateway auto-reracked directly off its own per-lane cooldown timer,
+// independent of the Pi's actual game state -- removed 2026-08-07, see
+// firmware/HANDOFF.md and state_machine/state_machine.py's FOUL_COOLDOWN_S.)
 //
 // Speed nodes send per-beam MSG_BEAM_EVENT. This gateway does no pairing or
 // interval math itself -- it just forwards raw beam events to the Pi. Pairing
@@ -93,12 +97,6 @@ HardwareSerial RS485(1);
 
 uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// A single trip over the foul line produces several FOUL edges in quick
-// succession (stumble, scramble up, beam re-broken). Act on the first one
-// and suppress repeats per lane for this window -- at most one pinsetter
-// re-rack per lane per cooldown.
-const unsigned long FOUL_COOLDOWN_MS = 50;
-
 // ESP-NOW peers must share a radio channel. This node never joins an AP, so
 // it sits here. The pinsetter node pins itself to the same channel (it can
 // only do that while on Ethernet -- see the note in pinsetter_node.ino).
@@ -166,12 +164,14 @@ struct UartBeamEventPayload {   // matches state_machine/protocol.py's BEAM_EVEN
 struct UartPinsetterStatusPayload {   // matches state_machine/protocol.py's STATUS_EVENT_FMT
   uint8_t statusCode;                 // StatusCode, see enum above
   uint8_t laneNumber;                 // 0 for node-level status codes, see PROTOCOL.md
+  uint8_t ballNumber;                 // pinsetter's own reported ball (1 or 2) for laneNumber; 0 if unknown/not applicable -- see ballNumberForLane()
   uint32_t timestampMs;
 };
 
 struct PinsetterCommandFromPi { // Pi -> gateway, any CommandCode (cycle, rerack, ...)
   uint8_t command;
   uint8_t laneNumber;
+  uint8_t cycleCount;   // CMD_CYCLE/CMD_RERACK only: exact solenoid pulse count the Pi wants run, computed from its own tracked/reported ball state -- the pinsetter no longer derives this itself (see pinsetter_node.ino's execPinsetterCommand). Ignored by other CommandCodes.
 };
 
 struct ScoreEventFromPi {       // Pi -> gateway, then broadcast onto ESP-NOW as MSG_SCORE_EVENT
@@ -216,9 +216,6 @@ int registeredSpeedNodeCount = 0;
 
 uint8_t pinsetterMac[6];
 bool pinsetterRegistered = false;
-
-// Per-lane foul cooldown tracking, indexed by lane number. 0 = never fouled.
-unsigned long lastFoulActionMs[256] = {0};
 
 uint8_t nextSeq = 0;   // for traceability in logs -- this node's outbound MSG_COMMAND/MSG_SCORE_EVENT aren't acked
 
@@ -344,7 +341,10 @@ void handleRegister(const uint8_t *mac, const NodeMessage &msg) {
 // transport is gated independently: ESP-NOW on dynamic peer registration,
 // RS485 on the hardware simply being present (RS485_ENABLED). See
 // PROTOCOL.md's "Dual-send" section.
-void sendPinsetterCommand(CommandCode command, uint8_t laneNumber) {
+// cycleCount only matters for CMD_CYCLE/CMD_RERACK (exact solenoid pulse
+// count -- see PinsetterCommandFromPi's comment); defaulted to 1 so every
+// other CommandCode's call sites don't need to think about it.
+void sendPinsetterCommand(CommandCode command, uint8_t laneNumber, uint8_t cycleCount = 1) {
   if (!PINSETTER_ENABLED) return;
 
   NodeMessage msg = {};
@@ -353,6 +353,7 @@ void sendPinsetterCommand(CommandCode command, uint8_t laneNumber) {
   msg.code = command;
   msg.laneNumber = laneNumber;
   msg.timestampMs = millis();
+  msg.data[0] = cycleCount;
 
   Serial.print("[");
   Serial.print(millis());
@@ -368,6 +369,10 @@ void sendPinsetterCommand(CommandCode command, uint8_t laneNumber) {
   }
   Serial.print(", lane=");
   Serial.print(laneNumber);
+  if (command == CMD_CYCLE || command == CMD_RERACK) {
+    Serial.print(", cycles=");
+    Serial.print(cycleCount);
+  }
   Serial.println(" }");
 
   if (pinsetterRegistered) {
@@ -456,20 +461,10 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       Serial.print(msg.laneNumber);
       Serial.println(" }");
 
+      // No local action on LANE_FOUL -- forwarded as-is, same as CLEAR. The
+      // Pi decides whose ball this is and issues the rerack itself (see
+      // this file's header comment and state_machine.py's on_foul()).
       forwardLaneEventToPi(msg);
-
-      if (msg.code == LANE_FOUL) {
-        unsigned long now = millis();
-        unsigned long last = lastFoulActionMs[msg.laneNumber];
-        if (last != 0 && now - last < FOUL_COOLDOWN_MS) {
-          Serial.print("Foul cooldown active for lane ");
-          Serial.print(msg.laneNumber);
-          Serial.println(" -- repeat suppressed");
-          break;
-        }
-        lastFoulActionMs[msg.laneNumber] = now;
-        sendPinsetterCommand(CMD_RERACK, msg.laneNumber);
-      }
       break;
     }
 
@@ -603,10 +598,34 @@ void forwardBeamEventToPi(const NodeMessage &msg) {
   sendToPi(UART_BEAM_EVENT, (const uint8_t *)&p, sizeof(p));
 }
 
+// Every MSG_STATUS carries every machine's MachineRecord (data[2..17], 4
+// bytes each: laneNumber, flags, cooldownLo, cooldownHi -- see
+// pinsetter_node.ino's sendStatusEvent()), regardless of which one
+// triggered the message, so this always has fresh data no matter which
+// statusCode fired. flags bit 0x04 is the pinsetter's own ball counter (set
+// = ball 2). Returns 0 (the wire's "unknown/not applicable" sentinel, see
+// protocol.py's StatusEvent) if laneNumber has no record here -- a
+// node-level status (laneNumber=0) or a lane this pinsetter doesn't own.
+uint8_t ballNumberForLane(const NodeMessage &msg, uint8_t laneNumber) {
+  // 0 is never a real lane -- it's the node-level sentinel -- and it's ALSO
+  // what an unused MachineRecord slot's laneNumber reads as (zero-filled),
+  // so without this guard a node-level status would spuriously "match" the
+  // first empty slot instead of correctly finding nothing.
+  if (laneNumber == 0) return 0;
+  for (int i = 0; i < MAX_MACHINES_PER_MSG; i++) {
+    int off = 2 + i * 4;
+    if (msg.data[off] == laneNumber) {
+      return (msg.data[off + 1] & 0x04) ? 2 : 1;
+    }
+  }
+  return 0;
+}
+
 void forwardStatusToPi(const NodeMessage &msg) {
   UartPinsetterStatusPayload p;
   p.statusCode = msg.code;
   p.laneNumber = msg.laneNumber;
+  p.ballNumber = ballNumberForLane(msg, msg.laneNumber);
   p.timestampMs = msg.timestampMs;
   sendToPi(UART_PINSETTER_STATUS, (const uint8_t *)&p, sizeof(p));
 }
@@ -657,8 +676,10 @@ void handlePiMessage(uint8_t msgType, const uint8_t *payload, uint8_t len) {
       Serial.print(req.command);
       Serial.print(", lane=");
       Serial.print(req.laneNumber);
+      Serial.print(", cycles=");
+      Serial.print(req.cycleCount);
       Serial.println(" }");
-      sendPinsetterCommand((CommandCode)req.command, req.laneNumber);
+      sendPinsetterCommand((CommandCode)req.command, req.laneNumber, req.cycleCount);
       break;
     }
     case UART_SCORE_EVENT: {
@@ -683,18 +704,49 @@ void handlePiMessage(uint8_t msgType, const uint8_t *payload, uint8_t len) {
 // sequence that happens to contain a stray START byte inside a bad frame's
 // span can cost one real frame before resync catches up; harmless here since
 // every event is tied to a live sensor/photo, not a one-shot ack.
+//
+// PILINK_OVER_USB_BENCH_TEST ALSO handles the bench console's line-based
+// text commands here (2026-08-07), not via a separate pollSerial() call --
+// see loop() below. Framed binary (0xAA-prefixed) and human-typed text
+// share the exact same Serial stream in that mode, so having two
+// independent readers both draining it was a real bug, not just noise: a
+// separately-called pollSerial() runs every loop() iteration and
+// unconditionally drains whatever's currently buffered as ASCII text --
+// since loop() cycles far faster than bytes arrive at 115200 baud,
+// pollSerial() won that race essentially every time, silently eating every
+// byte of an inbound Pi-link frame as garbage before this function ever
+// saw it. Bench-console-typed commands always worked (they never left this
+// function's own dispatch); anything sent FROM the Pi never did. Dispatch
+// on the first byte of each new "message" instead: 0xAA means a binary
+// frame, anything else is bench-console text.
 void pollPiLink() {
   static uint8_t buf[33];   // 1 (msgType) + up to 32 payload bytes
   static uint8_t bufLen = 0;
   static uint8_t expectedLen = 0;
   static bool haveLen = false;
   static bool sawStart = false;
+#if PILINK_OVER_USB_BENCH_TEST
+  static String cmdBuf = "";
+#endif
 
   while (PiLink.available()) {
     uint8_t b = PiLink.read();
 
     if (!sawStart) {
-      if (b == UART_FRAME_START) { sawStart = true; haveLen = false; bufLen = 0; }
+      if (b == UART_FRAME_START) {
+        sawStart = true; haveLen = false; bufLen = 0;
+      }
+#if PILINK_OVER_USB_BENCH_TEST
+      else {
+        char c = (char)b;
+        if (c == '\n' || c == '\r') {
+          if (cmdBuf.length() > 0) { handleSerialCommand(cmdBuf); cmdBuf = ""; }
+        } else {
+          cmdBuf += c;
+          if (cmdBuf.length() > 80) cmdBuf = "";
+        }
+      }
+#endif
       continue;
     }
     if (!haveLen) {
@@ -825,9 +877,13 @@ void handleSerialCommand(String cmd) {
   } else if (cmd == "pstatus") {
     sendPinsetterCommand(CMD_STATUS, 0);
   } else if (cmd.startsWith("cycle ")) {
-    sendPinsetterCommand(CMD_CYCLE, cmd.substring(6).toInt());
+    sendPinsetterCommand(CMD_CYCLE, cmd.substring(6).toInt(), 1);
   } else if (cmd.startsWith("rerack ")) {
-    sendPinsetterCommand(CMD_RERACK, cmd.substring(7).toInt());
+    // No Pi-tracked ball state available from the bench console -- 2 is the
+    // safe default (sweep + spot fresh works regardless of the machine's
+    // actual current position; see state_machine.py's rerack cycle-count
+    // logic for the real Pi-driven decision).
+    sendPinsetterCommand(CMD_RERACK, cmd.substring(7).toInt(), 2);
   } else if (cmd.startsWith("respot ")) {
     sendPinsetterCommand(CMD_RESPOT, cmd.substring(7).toInt());
   } else if (cmd.startsWith("power ")) {
@@ -865,7 +921,7 @@ void setup() {
 #if PILINK_OVER_USB_BENCH_TEST
   Serial.begin(PI_UART_BAUD);  // PiLink IS Serial in this mode -- one shared baud, see the flag's comment above
 #else
-  Serial.begin(9600);
+  Serial.begin(115200);
 #endif
   delay(200);
 
@@ -913,7 +969,12 @@ void setup() {
 }
 
 void loop() {
+#if !PILINK_OVER_USB_BENCH_TEST
+  // Only a genuinely separate stream from PiLink in real deployment (UART2
+  // vs Serial/UART0) -- in bench-test mode pollPiLink() itself handles
+  // bench-console text too, see its comment above.
   pollSerial();
+#endif
   pollPiLink();
   pollRS485();
   processRS485Queue();

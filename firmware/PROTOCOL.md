@@ -151,7 +151,8 @@ enum CommandCode : uint8_t {
 |---|---|
 | `code` | `CommandCode` |
 | `laneNumber` | target lane (ignored for `CMD_STATUS`) |
-| `data[]` | unused |
+| `data[0]` | `cycleCount` — `CMD_CYCLE`/`CMD_RERACK` only: exact solenoid pulse count to run, decided by the Pi (`state_machine.py`'s `_rerack_cycle_count()`) from the pinsetter's own last-reported ball number (see `MSG_STATUS` below), not derived locally on the pinsetter (2026-08-07 — see `firmware/HANDOFF.md`). Ignored by other `CommandCode`s. |
+| `data[1..63]` | unused |
 
 **`CMD_FOUL`/`ScoringCommand` removed, not carried forward.** The old
 protocol had a gateway→scoring command that was always dead code
@@ -184,6 +185,8 @@ struct MachineRecord {      // 4 bytes, naturally aligned, no padding
 | `data[1]` | `diState` (raw 8-bit DI bitmask) |
 | `data[2..17]` | up to `MAX_MACHINES_PER_MSG` (4) × `MachineRecord`, 4 bytes each — **always all machines, regardless of `code`**, same as the old JSON always included the full `machines[]` array no matter what `type` was |
 | `data[18..63]` | reserved, zeroed on send — 46 bytes free for future fields (firmware version, uptime, error codes, RSSI, ...) without another protocol-breaking redesign |
+
+`MachineRecord.flags`' ball bit is extracted by the gateway (matching `laneNumber` against the record array — see `ballNumberForLane()` in `gateway_node.ino`) and forwarded to the Pi on every `UART_PINSETTER_STATUS` frame as of 2026-08-07 (see "Gateway ↔ Pi UART boundary" below) — previously only `statusCode`/`laneNumber`/`timestampMs` crossed that boundary.
 
 ### `MSG_SCORE_EVENT` — gateway → broadcast, **on both transports**
 Originates from the Pi via `UART_SCORE_EVENT`; the gateway rebroadcasts it —
@@ -315,8 +318,15 @@ protocol unification**: the gateway receives a `NodeMessage` off whichever
 transport it arrived on and extracts the fields it needs to build the same
 compact UART payloads it already sent, regardless of which wire it came in
 on. It has since gained one new payload, `UART_PINSETTER_STATUS` (added
-2026-08-06), which forwards every pinsetter `MSG_STATUS` down to the Pi
-verbatim (`statusCode`, `laneNumber`, `timestampMs`) — added so the Pi's game
-state machine has a real `STATUS_CYCLE_COMPLETE` signal instead of guessing
-off a fixed timeout after sending `CMD_CYCLE`/`CMD_RERACK`. See
-`state_machine/protocol.py`'s `StatusEvent` for the Pi-side decode.
+2026-08-06), which forwards every pinsetter `MSG_STATUS` down to the Pi --
+added so the Pi's game state machine has a real `STATUS_CYCLE_COMPLETE`
+signal instead of guessing off a fixed timeout after sending
+`CMD_CYCLE`/`CMD_RERACK`. As of 2026-08-07 this payload also carries
+`ballNumber` (`statusCode`, `laneNumber`, `ballNumber`, `timestampMs`) --
+the pinsetter's own reported ball, extracted from `MachineRecord` (see
+`MSG_STATUS` above) -- so the Pi can decide rerack cycle counts itself
+instead of the pinsetter deriving them locally (see `state_machine.py`'s
+`_rerack_cycle_count()`/`reconcile_ball_number()`, and `UART_PINSETTER_COMMAND`
+below, which gained the matching `cycleCount` field the same day). See
+`state_machine/protocol.py`'s `StatusEvent`/`encode_pinsetter_command` for
+the Pi-side (de)coding.

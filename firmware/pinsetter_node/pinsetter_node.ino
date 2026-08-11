@@ -52,6 +52,12 @@
 #define RELAY_WRITE_RETRIES 3
 
 // ---- Machine (Brunswick A2) config -- THIS node owns the mapping ----
+// TODO(HANDOFF.md "Next" item 9): this compile-time mapping (and whatever
+// DI/optocoupler-to-lane mapping eventually joins it) should move to the
+// software (Pi) side so reassigning a relay/DI channel to a lane is a
+// config change, not a firmware edit+reflash. Not yet designed -- see that
+// item for why this isn't a trivial move (it changes who owns lane->channel
+// resolution, not just where the array lives).
 struct MachineConfig {
   uint8_t laneNumber;
   uint8_t cycleRelay;   // pulse-only: fires the cycle solenoid
@@ -179,7 +185,15 @@ struct NodeMessage {
 
 // ---- Per-machine state (parallel to MACHINES[]) ----
 struct MachineState {
-  uint8_t ball;              // 1 or 2 -- firmware counter; optocoupler sync later
+  uint8_t ball;              // 1 or 2 -- firmware counter; reported to the Pi
+                              // every MSG_STATUS (see sendStatusEvent()'s
+                              // MachineRecord flags) as ground truth for the
+                              // Pi's own rerack cycle-count decision (see
+                              // state_machine.py) -- this node no longer
+                              // consults it locally for that (see
+                              // execRerack()). Still just a blind toggle,
+                              // still desyncs if the machine is cycled from
+                              // its local button; optocoupler sync later.
   uint8_t pendingCycles;     // cycles queued (re-rack sequencing)
   bool cycleInProgress;      // machine mid-cycle (busy/cooldown window)
   unsigned long busyUntil;   // millis when the current cycle window ends
@@ -528,9 +542,15 @@ void requestCycles(int mi, uint8_t n) {
   m.pendingCycles = total;
 }
 
-// Re-rack: end state is a fresh full rack on 1st ball. On 2nd ball that is
-// one cycle; on 1st ball two (sweep the standing rack, then spot fresh).
-void execRerack(int mi) {
+// Re-rack: runs exactly cycleCount solenoid pulses, as decided by the Pi
+// (see state_machine.py's rerack cycle-count logic) -- typically 1 if the
+// pinsetter last reported ball 2, 2 if ball 1 ("sweep the standing rack,
+// then spot fresh"), using this node's OWN reported ball state as ground
+// truth rather than this node re-deciding it locally from a counter that
+// can desync (see MachineState.ball's comment). Falls back to 2 (the safe,
+// always-gets-to-fresh option) if the Pi/gateway sent 0. Ignored if the
+// machine is already mid-cycle/queued, same as before.
+void execRerack(int mi, uint8_t cycleCount) {
   MachineState &m = machineState[mi];
   if (m.cycleInProgress || m.pendingCycles > 0) {
     Serial.print("Re-rack ignored, lane ");
@@ -538,7 +558,7 @@ void execRerack(int mi) {
     Serial.println(" is already cycling/queued");
     return;
   }
-  requestCycles(mi, m.ball == 2 ? 1 : 2);
+  requestCycles(mi, cycleCount > 0 ? cycleCount : 2);
 }
 
 // Runs from loop(): starts queued cycles when a machine is idle, and marks
@@ -597,10 +617,10 @@ void execPinsetterCommand(const NodeMessage &msg) {
 
   switch (msg.code) {
     case CMD_CYCLE:
-      requestCycles(mi, 1);
+      requestCycles(mi, msg.data[0] > 0 ? msg.data[0] : 1);
       break;
     case CMD_RERACK:
-      execRerack(mi);
+      execRerack(mi, msg.data[0]);
       break;
     case CMD_RESPOT:
       // STUB: stop at 180 waiting for pins on 2nd ball, manual completion.
