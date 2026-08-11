@@ -22,9 +22,9 @@ See the [full background and concept](https://nicholas-a-hall.github.io/openlane
 
 ## Current state
 
-**Today:** pinsetter control, ESP-NOW transport, RS-485 redundant transport, gateway registration/recovery, lane-local game state, REST/WebSocket API, bowler and overhead UIs.
+**Today:** pinsetter control, ESP-NOW transport, RS-485 redundant transport, gateway registration/recovery, lane-local game state, camera pin detection, node health monitoring, REST/WebSocket API, bowler and overhead UIs.
 
-**In progress:** camera pin detection, node health monitoring, dynamic gateway discovery, complete foul/speed integration, production field testing.
+**In progress:**  dynamic gateway discovery, complete foul/speed integration, production field testing.
 
 ## License
 
@@ -33,4 +33,5 @@ See the [full background and concept](https://nicholas-a-hall.github.io/openlane
 ## Links
 
 - Project repo: [github.com/nicholas-a-hall/openlanelink](https://github.com/nicholas-a-hall/openlanelink)
-- [LinkedIn](https://www.linkedin.com/in/nicholashall87/) · [nicholas-a-hall.github.io](https://nicholas-a-hall.github.io)
+- [LinkedIn](https://www.linkedin.com/in/nicholashall87/) 
+- [nicholas-a-hall.github.io](https://nicholas-a-hall.github.io)
