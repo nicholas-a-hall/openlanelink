@@ -1,0 +1,83 @@
+{{- if .Values.kiosk.enabled }}
+{{- range .Values.kiosk.deployments }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "openlanescheduler.fullname" $ }}-kiosk-{{ .name }}
+  labels:
+    {{- include "openlanescheduler.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: kiosk
+    kiosk-instance: {{ .name }}
+spec:
+  type: {{ $.Values.kiosk.service.type }}
+  ports:
+    - port: {{ .port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "openlanescheduler.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: kiosk
+    kiosk-instance: {{ .name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "openlanescheduler.fullname" $ }}-kiosk-{{ .name }}
+  labels:
+    {{- include "openlanescheduler.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: kiosk
+    kiosk-instance: {{ .name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "openlanescheduler.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: kiosk
+      kiosk-instance: {{ .name }}
+  template:
+    metadata:
+      labels:
+        {{- include "openlanescheduler.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: kiosk
+        kiosk-instance: {{ .name }}
+    spec:
+      serviceAccountName: {{ include "openlanescheduler.serviceAccountName" $ }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kiosk
+          {{- with $.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ $.Values.kiosk.image.repository }}:{{ $.Values.kiosk.image.tag }}"
+          imagePullPolicy: {{ $.Values.kiosk.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: VITE_BACKEND_URL
+              value: "http://{{ include "openlanescheduler.backend.fullname" $ }}:{{ $.Values.backend.service.port }}"
+            - name: KIOSK_LANES
+              value: {{ .lanes | quote }}
+          resources:
+            {{- toYaml $.Values.kiosk.resources | nindent 12 }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,27 @@
+# Node
+node_modules/
+npm-debug.log*
+dist/
+.vite/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Claude Code / AI tooling
+.claude/
+CLAUDE.local.md
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.local

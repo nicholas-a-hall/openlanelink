@@ -1,0 +1,15 @@
+apiVersion: v2
+name: openlanescheduler
+description: Real-time bowling alley management system with manager dashboard and lane kiosks
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - bowling
+  - management
+  - real-time
+  - websocket
+home: https://github.com/yourusername/openlanescheduler
+maintainers:
+  - name: OpenLane Scheduler Team
+    email: support@openlanescheduler.local

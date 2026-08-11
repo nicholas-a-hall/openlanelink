@@ -1,0 +1,9 @@
+# Local dev override (not for production).
+# Windows/WinNAT reserves the 6374-6973 TCP range, so the default redis host
+# publish (6379) fails to bind. Redis is only used internally by the backend
+# (redis://redis:6379 over the compose network), so we just move the host-side
+# port out of the reserved range for optional local debugging.
+services:
+  redis:
+    ports: !override
+      - "16379:6379"

@@ -3,6 +3,8 @@ layout: default
 title: Open Lane Link
 ---
 
+**Setting up a real installation?** See [Installing one lane pair]({{ '/installation' | relative_url }}) for the practical, step-by-step version of what's below.
+
 ## Background
 
 My family and I bought a small, inactive bowling alley in Hillsboro Illinois after a personally, professionally, and financially difficult year. We looked around in our local community and found few places for people to gather together and have a good time. Our idea was simple - there isn't much for our kids to do, so let's build something for them. Our friends and neighbors can come, too.
@@ -37,13 +39,19 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 - Lane-local game state
 - REST/WebSocket API
 - Bowler and overhead UIs
+- Camera pin detection
+- UART Bridge integration
 
 **In progress**
-- Camera pin detection
-- Node health monitoring
-- Dynamic gateway discovery
 - Complete foul/speed integration
 - Production field testing
+
+**To-do**
+- Node health monitoring
+- Dynamic gateway discovery
+- Optimize pinsetter & gateway firmware
+- Performance improvements & reliability upgrades, vision service
+
 
 ## Requirements
 

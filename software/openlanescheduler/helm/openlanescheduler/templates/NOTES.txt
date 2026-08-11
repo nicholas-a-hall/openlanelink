@@ -1,0 +1,75 @@
+
+🌙 OpenLane Scheduler has been deployed! 🎳
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+
+Manager Dashboard:
+  https://{{ .host }}/
+
+Kiosk Displays:
+  https://{{ .host }}/kiosk/lanes-1-2 (Lanes 1-2)
+  https://{{ .host }}/kiosk/lanes-3-4 (Lanes 3-4)
+  https://{{ .host }}/kiosk/lanes-5-6 (Lanes 5-6)
+  https://{{ .host }}/kiosk/lanes-7-8 (Lanes 7-8)
+
+Backend API:
+  https://{{ .host }}/api
+{{- end }}
+{{- else }}
+
+To access the services, run these commands:
+
+Manager Dashboard:
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/component=frontend,app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:80
+  Open http://localhost:8080
+
+Backend API:
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/component=backend,app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 3001:3001
+  Backend available at http://localhost:3001
+
+Kiosk Displays (Lanes 1-2):
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "kiosk-instance=lanes-1-2,app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8081:80
+  Open http://localhost:8081
+{{- end }}
+
+Configuration Status:
+  ✓ Redis: {{ if .Values.redis.enabled }}Enabled{{ else }}Using external Redis{{ end }}
+  ✓ Persistence: {{ if .Values.redis.persistence.enabled }}Enabled ({{ .Values.redis.persistence.size }}){{ else }}Disabled{{ end }}
+  ✓ Backend replicas: {{ .Values.backend.replicaCount }}
+  ✓ Frontend replicas: {{ .Values.frontend.replicaCount }}
+  ✓ Kiosk deployments: {{ len .Values.kiosk.deployments }}
+  ✓ Timezone: {{ .Values.global.timezone }}
+
+{{- if not .Values.backend.googleCalendar.apiKey }}
+
+⚠️  IMPORTANT: Google Calendar integration not configured!
+
+To enable Google Calendar sync, update the values:
+  helm upgrade {{ .Release.Name }} openlanescheduler/openlanescheduler \
+    --set backend.googleCalendar.apiKey="YOUR_API_KEY" \
+    --set backend.googleCalendar.calendarId="YOUR_CALENDAR_ID" \
+    --set backend.googleCalendar.serviceAccountJson='{"type":"service_account",...}'
+{{- end }}
+
+Useful Commands:
+
+  # View all pods
+  kubectl get pods -n {{ .Release.Namespace }} -l "app.kubernetes.io/instance={{ .Release.Name }}"
+
+  # View backend logs
+  kubectl logs -n {{ .Release.Namespace }} -l "app.kubernetes.io/component=backend" -f
+
+  # View Redis status
+  kubectl get statefulset -n {{ .Release.Namespace }} {{ include "openlanescheduler.redis.fullname" . }}
+
+  # Scale backend
+  kubectl scale deployment -n {{ .Release.Namespace }} {{ include "openlanescheduler.backend.fullname" . }} --replicas=3
+
+  # Restart backend
+  kubectl rollout restart deployment -n {{ .Release.Namespace }} {{ include "openlanescheduler.backend.fullname" . }}
+
+For more information, visit: https://github.com/yourusername/openlanescheduler

@@ -1,0 +1,199 @@
+# Default values for openlanescheduler
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global settings
+global:
+  timezone: "America/Chicago"
+
+# Redis configuration
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    storageClass: ""  # Use default storage class
+    size: 1Gi
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+  service:
+    type: ClusterIP
+    port: 6379
+
+# Backend configuration
+backend:
+  replicaCount: 1
+  image:
+    repository: openlanescheduler/backend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3001
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "200m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  env:
+    nodeEnv: "production"
+    port: 3001
+    gcalSyncInterval: "120000"  # 2 minutes
+  # Google Calendar configuration (set via secrets)
+  googleCalendar:
+    # apiKey: ""  # Set in secrets
+    # serviceAccountJson: ""  # Set in secrets
+    # calendarId: ""  # Set in secrets
+  # Health check configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 3001
+    initialDelaySeconds: 30
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 3001
+    initialDelaySeconds: 10
+    periodSeconds: 5
+
+# Frontend (Manager Dashboard) configuration
+frontend:
+  replicaCount: 1
+  image:
+    repository: openlanescheduler/frontend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Kiosk configuration
+kiosk:
+  enabled: true
+  # Number of kiosk deployments (one per lane pair)
+  # Default: 4 deployments for 8 lanes (2 lanes per kiosk)
+  deployments:
+    - name: lanes-1-2
+      lanes: "1,2"
+      port: 8081
+    - name: lanes-3-4
+      lanes: "3,4"
+      port: 8082
+    - name: lanes-5-6
+      lanes: "5,6"
+      port: 8083
+    - name: lanes-7-8
+      lanes: "7,8"
+      port: 8084
+  image:
+    repository: openlanescheduler/kiosk
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"  # Change to your ingress controller
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/websocket-services: "openlanescheduler-backend"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: openlanescheduler.local
+      paths:
+        - path: /api
+          pathType: Prefix
+          service: backend
+          port: 3001
+        - path: /socket.io
+          pathType: Prefix
+          service: backend
+          port: 3001
+        - path: /kiosk/lanes-1-2
+          pathType: Prefix
+          service: kiosk-lanes-1-2
+          port: 8081
+        - path: /kiosk/lanes-3-4
+          pathType: Prefix
+          service: kiosk-lanes-3-4
+          port: 8082
+        - path: /kiosk/lanes-5-6
+          pathType: Prefix
+          service: kiosk-lanes-5-6
+          port: 8083
+        - path: /kiosk/lanes-7-8
+          pathType: Prefix
+          service: kiosk-lanes-7-8
+          port: 8084
+        - path: /
+          pathType: Prefix
+          service: frontend
+          port: 80
+  tls:
+    - secretName: openlanescheduler-tls
+      hosts:
+        - openlanescheduler.local
+
+# Service Account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod Security Context
+podSecurityContext:
+  fsGroup: 1000
+
+# Security Context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Autoscaling (optional, disabled by default)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80

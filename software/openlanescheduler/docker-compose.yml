@@ -1,0 +1,129 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=lanedemodb
+    restart: unless-stopped
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    profiles: ["mqtt"]
+    ports:
+      - "1883:1883"  # MQTT
+      - "9001:9001"  # MQTT over WebSocket
+    volumes:
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-logs:/mosquitto/log
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - REDIS_URL=redis://redis:6379
+      - MONGODB_URL=mongodb://mongodb:27017
+      - TZ=America/Chicago
+      - LANES=${LANES:-1,2,3,4,5,6,7,8}
+      - SERVICE_CATEGORIES=GEAR BOX,DETECTOR,TURRET,DECK,PIT,CONVEYOR,ELEVATOR,RAKE,BELTS,BALL RETURN,SCORING,ELECTRICAL,OTHER
+      # Uncomment and configure for Google Calendar sync:
+      #- GCAL_API_KEY=
+      #- GCAL_MODE=single
+      #- GCAL_CALENDAR_ID=
+      #- GCAL_SYNC_INTERVAL=120000
+      #- GCAL_SERVICE_ACCOUNT_JSON=
+    depends_on:
+      - redis
+      - mongodb
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_LANES=${LANES:-1,2,3,4,5,6,7,8}
+      # Don't set VITE_BACKEND_URL - let it auto-detect from hostname
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  kiosk-lanes-1-2:
+    build:
+      context: ./kiosk
+      args:
+        - VITE_KIOSK_LANES=[1,2]
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  kiosk-lanes-3-4:
+    build:
+      context: ./kiosk
+      args:
+        - VITE_KIOSK_LANES=[3,4]
+    ports:
+      - "8082:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  kiosk-lanes-5-6:
+    build:
+      context: ./kiosk
+      args:
+        - VITE_KIOSK_LANES=[5,6]
+    ports:
+      - "8083:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  kiosk-lanes-7-8:
+    build:
+      context: ./kiosk
+      args:
+        - VITE_KIOSK_LANES=[7,8]
+    ports:
+      - "8084:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  mqtt-bridge:
+    build: ./mqtt-bridge
+    profiles: ["mqtt"]
+    environment:
+      - MQTT_BROKER_URL=mqtt://mosquitto:1883
+      - BACKEND_URL=http://backend:3001
+      - TZ=America/Chicago
+      - LOG_LEVEL=info
+    depends_on:
+      - mosquitto
+      - backend
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  mongodb-data:
+  mosquitto-data:
+  mosquitto-logs:

@@ -1,0 +1,17 @@
+{
+  "name": "openlanescheduler-mqtt-bridge",
+  "version": "1.0.0",
+  "description": "MQTT to Socket.IO bridge for OpenLane Scheduler hardware integration",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.3.5",
+    "socket.io-client": "^4.6.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  }
+}
