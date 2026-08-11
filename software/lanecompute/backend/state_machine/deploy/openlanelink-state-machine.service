@@ -1,0 +1,33 @@
+[Unit]
+Description=openlanelink state machine (scoring / game state)
+# Wants, not Requires: bridge_client.py polls /health and reconnects the WS
+# event feed on its own schedule, so the state machine coming up first just
+# means commands no-op until the bridge answers -- which is the same
+# behaviour it already has when the mesh link drops mid-game.
+After=network.target openlanelink-uart-bridge.service
+Wants=openlanelink-uart-bridge.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# No supplementary groups needed: this process owns no hardware. It reaches
+# the gateway only through the UART bridge service's HTTP/WS surface.
+User=pi
+WorkingDirectory=/opt/openlanelink/state_machine
+# LANE_NUMBERS is the important one -- it's the lanes this compute node
+# covers, and it must match the lane numbers the mesh nodes are flashed with
+# (see api.py's VALID_LANES). Defaults to 7,8. Also UART_BRIDGE_URL.
+# Leading '-' means systemd won't fail to start if the file is absent.
+EnvironmentFile=-/etc/openlanelink/state-machine.env
+# `uv run` resolves the project's .venv from pyproject.toml/uv.lock in
+# WorkingDirectory -- no hand-built venv path to keep in sync here.
+# Adjust the uv path if it isn't on PATH for this user (`which uv`). It must
+# be readable by User= above: a uv installed into root's ~/.local/bin fails
+# here with status=203/EXEC.
+ExecStart=/usr/local/bin/uv run main.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

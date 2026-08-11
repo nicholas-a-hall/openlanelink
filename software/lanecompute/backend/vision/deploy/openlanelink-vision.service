@@ -1,0 +1,39 @@
+[Unit]
+Description=openlanelink vision (camera pinfall detection)
+# Wants, not Requires: this daemon's clients both reconnect on their own
+# (bridge_client.py retries the WS event feed, _report_standing_mask
+# tolerates an unreachable state machine), so starting before either one is
+# up is harmless and must not block the lane.
+After=network.target openlanelink-uart-bridge.service openlanelink-state-machine.service
+Wants=openlanelink-uart-bridge.service openlanelink-state-machine.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Camera access on Raspberry Pi OS is gated by the `video` group (not
+# `dialout`, which is the serial one the UART bridge needs) --
+# sudo usermod -aG video <user>
+User=pi
+SupplementaryGroups=video
+WorkingDirectory=/opt/openlanelink/vision
+# Override VISION_CAPTURE_DELAY_S / VISION_AUTO_EXPOSURE / VISION_EXPOSURE /
+# STATE_MACHINE_URL / UART_BRIDGE_URL here without editing code. Leading '-'
+# means systemd won't fail to start if the file is absent.
+#
+# Note that VISION_AUTO_EXPOSURE/VISION_EXPOSURE are baked into a lane's
+# reference frame at calibration time -- changing them here means every
+# existing calibration is measuring against a baseline captured under
+# different camera settings, so recalibrate after touching them.
+EnvironmentFile=-/etc/openlanelink/vision.env
+# `uv run` resolves the project's .venv from pyproject.toml/uv.lock in
+# WorkingDirectory -- no hand-built venv path to keep in sync here.
+# Adjust the uv path if it isn't on PATH for this user (`which uv`). It must
+# be readable by User= above: a uv installed into root's ~/.local/bin fails
+# here with status=203/EXEC.
+ExecStart=/usr/local/bin/uv run pinfall.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

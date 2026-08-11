@@ -1,0 +1,25 @@
+[Unit]
+Description=openlanelink bowler UI
+# Wants, not Requires: this serves a static bundle. The browser talks to the
+# state machine directly, so the UI being up while the state machine isn't
+# is a page that can't fetch, not a page that shouldn't exist.
+After=network.target openlanelink-state-machine.service
+Wants=openlanelink-state-machine.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/openlanelink/ui
+# `vite preview` serves the built bundle in dist/, NOT the dev server, and
+# NOT the src/ tree -- `npm run build` has to run after any UI change or
+# this keeps serving the previous bundle. It's a minimal static server with
+# no compression or caching; adequate on a lane LAN, but if this ever needs
+# hardening the answer is nginx with a root of dist/ and this unit goes away.
+ExecStart=/usr/bin/npm run preview -- --host --port 5173
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
