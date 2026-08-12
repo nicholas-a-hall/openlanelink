@@ -44,19 +44,28 @@ part.
 
 **Self-triggering (2026-08-07):** `bridge_client.py` makes this daemon its
 own independent client of the uart_bridge service's WS `/events` feed (the
-same feed `state_machine` reads) — it watches for a downstream
-ball-detection beam break (from a `speed_node` today, or a future
-`ball_detect_node`; see that module's docstring for how the two are told
-apart) and self-triggers a capture after `VISION_CAPTURE_DELAY_S` (default
-2.5s, letting the ball reach the pins and settle), gated by
-`VISION_TRIGGER_COOLDOWN_S` (default 5.0s) per lane so a bounced beam or
-overlapping node coverage can't double-fire. This is NOT something
-`state_machine` or `uart_bridge` calls into — vision is the side that
-depends on knowing when a ball was detected, so it owns the client glue,
-keeping the standalone boundary (see `../state_machine/main.py`'s
-`on_beam_event()` comment, which explicitly disclaims triggering vision).
-`/capture/{lane}` remains available for manual/bench triggering regardless
-(curl, a bench script, `--once`).
+same feed `state_machine` reads) — it watches for a ball-at-the-pins beam
+break and self-triggers a capture after `VISION_CAPTURE_DELAY_S`, letting
+the ball reach the pins and settle. Duplicate triggers for one ball are
+absorbed by an in-flight guard per lane (see `pinfall.py`'s
+`_capture_in_flight`). This is NOT something `state_machine` or
+`uart_bridge` calls into — vision is the side that depends on knowing when a
+ball was detected, so it owns the client glue, keeping the standalone
+boundary (see `../state_machine/main.py`'s `on_beam_event()` comment, which
+explicitly disclaims triggering vision). `/capture/{lane}` remains available
+for manual/bench triggering regardless (curl, a bench script, `--once`).
+
+Two beam roles trigger it (`bridge_client.py`'s `TRIGGER_ROLES`), and this
+daemon treats them identically: a `speed_node`'s downstream/near-pins beam
+(`ROLE_DOWNSTREAM`) and a `ball_detect_node`'s single beam sited just before
+the pin deck (`ROLE_BALL_DETECT`, added 2026-08-12 when that node was
+built). They stay distinct on the wire only because `state_machine` pairs the
+speed node's two beams into a mph figure and the ball-detect beam has no
+partner to pair with — see `firmware/PROTOCOL.md`'s `MSG_BEAM_EVENT`. Vision
+does no pairing at all, so the distinction is irrelevant here; it just wants
+the earliest reliable "ball's at the pins" edge from whichever node the lane
+happens to have. A lane running both nodes fires two triggers per ball,
+which is one of the two cases the in-flight guard exists for.
 
 ## Approach
 
@@ -121,8 +130,8 @@ captured/compared arrays stay single-channel throughout.
   convenience -- `fallenPins` here just means "not standing right now,"
   not "fell on this specific ball").
 - `bridge_client.py` — WS client of uart_bridge's `/events` feed; drives
-  `pinfall.py`'s self-triggered capture off ball-detection beam events (see
-  "Self-triggering" above). Trimmed compared to
+  `pinfall.py`'s self-triggered capture off ball-at-the-pins beam events in
+  either triggering role (see "Self-triggering" above). Trimmed compared to
   `../state_machine/bridge_client.py` -- vision only ever consumes events
   off the bridge, it never issues commands to it.
 - `debug_view.py` — live camera view with the calibrated pins overlaid:

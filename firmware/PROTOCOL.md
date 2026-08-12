@@ -56,7 +56,7 @@ every payload is always `sizeof(NodeMessage)` bytes.
 enum MsgType : uint8_t {
   MSG_REGISTER    = 0,  // any node -> gateway, ESP-NOW only, boot + every 10s
   MSG_LANE_EVENT  = 1,  // fouling -> gateway, dual-sent (ESP-NOW + RS485)
-  MSG_BEAM_EVENT  = 2,  // speed -> gateway, dual-sent (ESP-NOW + RS485)
+  MSG_BEAM_EVENT  = 2,  // speed OR ball detect -> gateway, dual-sent (ESP-NOW + RS485)
   MSG_COMMAND     = 3,  // gateway -> pinsetter, dual-sent (ESP-NOW + RS485)
   MSG_STATUS      = 4,  // pinsetter -> gateway, dual-sent (ESP-NOW + RS485)
   MSG_SCORE_EVENT = 5,  // gateway -> broadcast, dual-sent (ESP-NOW broadcast address + RS485,
@@ -66,6 +66,7 @@ enum MsgType : uint8_t {
 
 enum NodeType : uint8_t {
   NODE_FOULING = 0, NODE_PINSETTER = 1, NODE_SCORING = 2, NODE_SPEED = 3,
+  NODE_BALL_DETECT = 4,
 };
 
 struct NodeMessage {
@@ -86,7 +87,7 @@ enum that had to avoid collisions across unrelated node types, each message
 type below gets its own small, independent code enum.
 
 **Every node has RS485 hardware and dual-sends its operational traffic** —
-fouling, speed, pinsetter, and the gateway. RS485 exists to insulate the
+fouling, speed, ball detect, pinsetter, and the gateway. RS485 exists to insulate the
 whole mesh against ESP-NOW radio failures, not just the gateway↔pinsetter
 link specifically, so it doesn't stop at the one node pair with the most
 obviously expensive failure mode. See "RS485 framing" below for how this
@@ -125,20 +126,42 @@ nothing to gate on registration or peer state the way the pinsetter's
 two-way traffic is. It just enqueues the RS485 frame unconditionally
 alongside every ESP-NOW send.
 
-### `MSG_BEAM_EVENT` — speed node → gateway, **dual-sent (ESP-NOW + RS485)**
+### `MSG_BEAM_EVENT` — speed node **or ball detection node** → gateway, **dual-sent (ESP-NOW + RS485)**
 ```cpp
 enum BeamEventCode : uint8_t { BEAM_CLEAR = 0, BEAM_BROKEN = 1 };
-enum BeamRole      : uint8_t { ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1 };
+enum BeamRole      : uint8_t { ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1, ROLE_BALL_DETECT = 2 };
 ```
 | field | value |
 |---|---|
 | `code` | `BeamEventCode` |
 | `laneNumber` | the lane |
-| `data[0]` | `BeamRole` |
+| `data[0]` | `BeamRole` — 0/1 from a speed node, 2 from a ball detection node |
 
 No timing/pairing math here or anywhere in firmware — see `HANDOFF.md`'s
 "nodes are dumb" principle. Pairing upstream/downstream into an interval
 happens on the Pi. Same transmit-only pattern as the fouling node above.
+
+**`BeamRole` is what distinguishes the two emitters, and it is the only
+thing that does** — the message type, struct, and gateway handling are
+otherwise identical, and the gateway forwards any role to the Pi verbatim
+without caring which node sent it (see "RS485 framing" below for why that
+matters: two beam-event emitters on one bus is the first real stress on the
+unaddressed-frame assumption, and it holds precisely because the gateway
+never needs to know the sender).
+
+**Why `ROLE_BALL_DETECT` is a third role rather than the ball detection node
+just reporting `ROLE_DOWNSTREAM`** (which is what an earlier design note in
+`vision/bridge_client.py` assumed, since both physically mean "the ball
+reached the pins"): roles 0 and 1 are a matched *pair*, and the Pi's
+`state_machine/main.py` pops its pending upstream timestamp on **any**
+`ROLE_DOWNSTREAM` edge to compute an interval. A ball detection node's beam
+has no pairing partner and sits at a different point on the lane, so wearing
+role 1 would let it consume a speed node's pending upstream reading and
+produce a ball speed measured over the wrong beam spacing entirely — a
+plausible-looking wrong number, on any lane covered by both nodes. Consumers
+that genuinely don't care about the distinction just accept both roles
+(`vision/bridge_client.py`'s `TRIGGER_ROLES`); the one consumer that does
+care gets to tell them apart.
 
 ### `MSG_COMMAND` — gateway → pinsetter, **dual-sent (ESP-NOW + RS485)**
 ```cpp
@@ -230,8 +253,8 @@ resumes from the next byte — same resync approach and tradeoff as the Pi
 UART link (adequate for a direct wired link; see `HANDOFF.md`).
 
 **RS485 is one shared multi-drop bus, not a set of point-to-point links** —
-the gateway, fouling node, speed node, and pinsetter all tap into the same
-physical wire pair. (The ESP32 only has one `HardwareSerial` left on the
+the gateway, fouling node, speed node, ball detection node, and pinsetter all
+tap into the same physical wire pair. (The ESP32 only has one `HardwareSerial` left on the
 gateway after the Pi link uses another, so separate point-to-point RS485
 runs to each node aren't even physically possible with this hardware —
 multi-drop is the only option, which conveniently is also RS485's whole
@@ -240,12 +263,23 @@ reason to exist.)
 **There is no sender/receiver addressing in the frame.** This works only
 because of a structural assumption that holds for the current topology: each
 gateway's mesh has *at most one node of each type* (one fouling node, one
-speed node, one pinsetter), so `msgType` (and `code` for `MSG_REGISTER`)
-already tells the receiver unambiguously who must have sent it —
-`MSG_LANE_EVENT` can only ever come from the fouling node, `MSG_BEAM_EVENT`
-only from the speed node, `MSG_STATUS` only from the pinsetter. **If that
-assumption ever breaks — e.g. two fouling nodes sharing one RS485 bus —
-real addressing has to be added to the frame.** Not designed for yet.
+speed node, one ball detection node, one pinsetter), so `msgType` (and `code`
+for `MSG_REGISTER`) already tells the receiver unambiguously who must have
+sent it — `MSG_LANE_EVENT` can only ever come from the fouling node,
+`MSG_STATUS` only from the pinsetter. **If that assumption ever breaks — e.g.
+two fouling nodes sharing one RS485 bus — real addressing has to be added to
+the frame.** Not designed for yet.
+
+`MSG_BEAM_EVENT` is the one message type with **two** possible senders (the
+speed node and the ball detection node, added 2026-08-12) and it does not
+break the assumption, because nothing downstream needs to know which board
+emitted it: the gateway forwards every beam event to the Pi unchanged
+regardless of role, and the Pi keys off `BeamRole` — a property of the beam's
+purpose, not of the sender's identity. Roles are disjoint across the two
+node types (0/1 vs. 2), so this stays a message-level distinction rather than
+a sender-level one. That's the shape any future second-emitter-per-`msgType`
+case should take too; anything needing to identify the *board* is what would
+actually force addressing into the frame.
 
 The pinsetter's existing send-side collision-avoidance queue (idle detection
 + jitter before transmitting, since RS485 is half-duplex) is used by every

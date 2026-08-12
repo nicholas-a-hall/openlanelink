@@ -84,7 +84,7 @@ Every node has exactly one job, done well. ESP nodes never communicate node-to-n
 | Pin-count sensor | ESP32-CAM | Lane | Reports standing pin count |
 | Fouling sensor | Baomain E3F-R2NK retroreflective break-beam | Lane-pair | Detects foul line violations |
 | Ball-speed sensor | 4x Baomain E3F-R2NK retroreflective break-beam (2 per lane) | Lane-pair | Calculates ball speed |
-| Ball-detect sensor (optional, failsafe) | Baomain E3F-R2NK retroreflective break-beam | Lane | Positioned just before the pin deck; notifies gateway a ball has arrived |
+| Ball-detect sensor | 2x Baomain E3F-R2NK retroreflective break-beam (1 per lane) | Lane-pair | Positioned just before the pin deck; notifies the gateway a ball has arrived, which is what starts vision capture → scoring → pinsetter cycle. Independent of the ball-speed node: either can serve as a lane's trigger, both can coexist, and a lane can run neither (scoring still accepts pinfall reports without any beam at all) |
 
 No pinsetter observability/telemetry stack in this draft — sensing is scoped to scoring-path inputs only.
 
@@ -138,13 +138,15 @@ The uniform format means every receive handler dispatches on `msgType` first, on
 
 `NodeType` isn't repeated on every message — it only appears once, in `MSG_REGISTER`'s `code` field, sent at boot and every 10s. After that, the mesh relies on a structural assumption: each gateway's mesh has at most one node of each type, so `msgType` alone tells the receiver who must have sent it (`MSG_LANE_EVENT` can only come from the fouling node, `MSG_STATUS` only from the pinsetter). This is the same assumption RS485 framing leans on for sender identification, since the RS485 frame carries no addressing at all. Breaks if a future topology puts two same-type nodes on one bus — not designed for yet.
 
+`MSG_BEAM_EVENT` is the one type with two possible senders (speed node and ball detection node), and it doesn't strain that assumption: nothing downstream needs to know which *board* sent one. The gateway forwards every beam event unchanged, and the Pi keys off the beam role — a property of the beam's purpose, not the sender's identity.
+
 ### Message types
 
 | `msgType` | Direction | Transport | Purpose |
 |---|---|---|---|
 | `MSG_REGISTER` (0) | any node → gateway | ESP-NOW only | boot announce + heartbeat, every 10s |
 | `MSG_LANE_EVENT` (1) | fouling → gateway | dual-sent | foul/clear edge |
-| `MSG_BEAM_EVENT` (2) | speed → gateway | dual-sent | break-beam edge |
+| `MSG_BEAM_EVENT` (2) | speed *or* ball detect → gateway | dual-sent | break-beam edge (`data[0]` = beam role: 0 upstream, 1 downstream, 2 ball-at-pins) |
 | `MSG_COMMAND` (3) | gateway → pinsetter | dual-sent | cycle, power, rerack, respot, status request |
 | `MSG_STATUS` (4) | pinsetter → gateway | dual-sent | relay/DI state, machine records, heartbeat |
 | `MSG_SCORE_EVENT` (5) | gateway → broadcast | dual-sent | pinfall mask per ball |
@@ -160,7 +162,7 @@ RS485 is a raw byte stream, so it wraps the identical 72-byte struct in an expli
 [0xAA START][LEN uint8][PAYLOAD (LEN bytes = the raw NodeMessage struct)][CHECKSUM uint8 = XOR of LEN and all PAYLOAD bytes]
 ```
 
-`LEN` is always 72. Both sides scan for `0xAA`, read `LEN`, read `LEN` payload bytes, verify the checksum. On mismatch the whole frame is discarded and scanning resumes from the next byte. It's a shared multi-drop bus — gateway, fouling, speed, and pinsetter all tap the same physical wire pair, not point-to-point links, since the gateway only has one spare UART left after the Pi link.
+`LEN` is always 72. Both sides scan for `0xAA`, read `LEN`, read `LEN` payload bytes, verify the checksum. On mismatch the whole frame is discarded and scanning resumes from the next byte. It's a shared multi-drop bus — gateway, fouling, speed, ball detect, and pinsetter all tap the same physical wire pair, not point-to-point links, since the gateway only has one spare UART left after the Pi link.
 
 ### Worked example: a foul event on the wire
 

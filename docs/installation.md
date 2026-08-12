@@ -27,7 +27,8 @@ lane's deck.
 ## 1. Firmware
 
 Flash each ESP32 node from its own sketch folder under `firmware/`
-(`gateway_node/`, `pinsetter_node/`, `foul_node/`, `speed_node/`) via the
+(`gateway_node/`, `pinsetter_node/`, `foul_node/`, `speed_node/`,
+`ball_detect_node/`) via the
 Arduino IDE — each `.ino` is self-contained per the project's sketch-layout
 convention. Wiring, pin assignments, and per-node hardware notes are in
 [`firmware/HANDOFF.md`](https://github.com/nicholas-a-hall/openlanelink/blob/main/firmware/HANDOFF.md);
@@ -43,8 +44,8 @@ the example values shipped in the sketches:
 
 | Sketch | Constant | What it is |
 |---|---|---|
-| `foul_node`, `speed_node` | `GATEWAY_MAC` | your gateway's ESP-NOW MAC |
-| `foul_node`, `speed_node` | `LANE_NUMBER[]` | the two lane numbers this pair covers (`{7, 8}` in the shipped sketches) |
+| `foul_node`, `speed_node`, `ball_detect_node` | `GATEWAY_MAC` | your gateway's ESP-NOW MAC |
+| `foul_node`, `speed_node`, `ball_detect_node` | `LANE_NUMBER[]` | the two lane numbers this pair covers (`{7, 8}` in the shipped sketches) |
 | `speed_node` | `SENSOR_LANE[]` | which of the 4 beams belongs to which lane |
 | `pinsetter_node` | `MACHINES[]` | `{laneNumber, cycleRelay, powerRelay}` per machine — the relay channels each lane's pinsetter is physically wired to |
 
@@ -59,9 +60,15 @@ real `gateway_node` sketch over it.
 Two things worth knowing before you wire anything up:
 
 - **Several GPIO assignments are still placeholders**, notably the
-  gateway's UART2 pins for the Pi link (RX=16/TX=17) and the speed node's
-  sensor and RS485 pins. Confirm them against your actual boards —
-  `firmware/HANDOFF.md` flags each unverified one.
+  gateway's UART2 pins for the Pi link (RX=16/TX=17) and the speed and ball
+  detection nodes' sensor and RS485 pins. Confirm them against your actual
+  boards — `firmware/HANDOFF.md` flags each unverified one.
+- **`speed_node` and `ball_detect_node` are independent — deploy either,
+  both, or neither.** Both give the Pi a "ball reached the pins" trigger
+  (which is what starts vision → scoring → pinsetter cycle); the speed node
+  additionally measures ball speed from its beam pair, and the ball
+  detection node's single beam sits closer to the deck. A lane running both
+  reports each ball twice, which is expected and absorbed downstream.
 - **The pinsetter node's OTA password is `changeme`.** Set a real one
   before this goes anywhere near a public network.
 
@@ -70,7 +77,8 @@ Two things worth knowing before you wire anything up:
 The gateway has a serial bench console at **9600 baud** — `cycle <lane>`,
 `rerack <lane>`, `respot <lane>`, `power <lane> on|off`, `pstatus`,
 `status`. Use it to confirm each node registers (`Registered FOULING
-node`, `Registered PINSETTER node`, `Registered SPEED node`) and that
+node`, `Registered PINSETTER node`, `Registered SPEED node`, `Registered
+BALL DETECT node` — whichever you've flashed) and that
 relays fire on the right machine, before any software is in the loop. If a
 lane cycles from here, the mesh half is good.
 
@@ -210,8 +218,9 @@ uv run debug_view.py --lane 7
 ```
 
 **How captures get triggered:** the daemon is its own client of the UART
-bridge's `/events` feed and self-triggers off a downstream
-ball-detection beam break (a `speed_node`'s near-pins beam today), then
+bridge's `/events` feed and self-triggers off a ball-at-the-pins beam
+break — either a `speed_node`'s near-pins beam or a `ball_detect_node`'s
+beam, which vision treats identically — then
 POSTs the raw standing-pin mask to `state_machine`. `POST /capture/{lane}`
 stays available for manual and bench triggering. Note what vision does
 *not* do: it reports which pins are standing right now, with no memory

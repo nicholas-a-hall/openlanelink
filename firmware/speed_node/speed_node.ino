@@ -48,7 +48,13 @@
 const int NUM_LANES = 2;
 const int LANE_NUMBER[NUM_LANES] = {7, 8};
 
-enum BeamRole : uint8_t { ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1 };
+// ROLE_BALL_DETECT is never emitted by this node -- it belongs to
+// ball_detect_node.ino's single near-pins beam. Carried here only to keep
+// the canonical BeamRole enum identical across every sketch (see
+// PROTOCOL.md).
+enum BeamRole : uint8_t {
+  ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1, ROLE_BALL_DETECT = 2,
+};
 
 const int NUM_SENSORS = 4;
 const int SENSOR_PIN[NUM_SENSORS]  = {25, 26, 27, 32};       // placeholder, verify
@@ -83,6 +89,7 @@ enum MsgType : uint8_t {
 
 enum NodeType : uint8_t {
   NODE_FOULING = 0, NODE_PINSETTER = 1, NODE_SCORING = 2, NODE_SPEED = 3,
+  NODE_BALL_DETECT = 4,
 };
 
 enum BeamEventCode : uint8_t { BEAM_CLEAR = 0, BEAM_BROKEN = 1 };

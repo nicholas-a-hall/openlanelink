@@ -28,23 +28,31 @@ WS_RECONNECT_INTERVAL_S = 3.0
 
 EVENT_BEAM_BROKEN = 4
 ROLE_DOWNSTREAM = 1
+ROLE_BALL_DETECT = 2
+
+# Both roles mean the same thing to THIS daemon -- "a ball just reached the
+# pins, start the settle-then-capture clock." They stay distinct on the wire
+# only because state_machine pairs the speed node's beams into a mph figure
+# and a ball_detect_node's single beam has no partner to pair with (see
+# firmware/PROTOCOL.md's MSG_BEAM_EVENT and ../state_machine/main.py's
+# on_beam_event). Vision does no pairing at all, so it simply accepts either.
+TRIGGER_ROLES = (ROLE_DOWNSTREAM, ROLE_BALL_DETECT)
 
 
 async def watch_ball_detected(base_url: str, on_ball_detected) -> None:
     """Runs forever (until cancelled), awaiting on_ball_detected(lane_number)
-    once per downstream-beam-broken BeamEvent -- the "ball reached the pins"
-    edge, same one state_machine.py's on_downstream_beam() acts on
-    independently over its own copy of this feed.
+    once per ball-at-the-pins BeamEvent -- see TRIGGER_ROLES above for which
+    roles count. state_machine.py acts on the same edges independently over
+    its own copy of this feed (on_downstream_beam()/on_ball_detected()).
 
-    Covers both a speed_node (two beams; only its downstream/near-pins beam
-    is the trigger -- the upstream one is just there for speed pairing,
-    which state_machine does on its own) and a future ball_detect_node
-    (single beam; by convention it should tag its one beam as
-    ROLE_DOWNSTREAM too, since that's the "ball reached the pins" role,
-    which makes it indistinguishable from -- and handled identically to --
-    speed_node's trigger beam here). ball_detect_node's firmware doesn't
-    exist yet (firmware/ball_detect_node/ is still an empty placeholder
-    directory); this is the assumption to revisit once it's built.
+    Covers a speed_node (two beams; only its downstream/near-pins beam
+    triggers -- the upstream one is just there for speed pairing, which
+    state_machine does on its own) and a ball_detect_node (a single beam
+    sited just before the pin deck, tagged ROLE_BALL_DETECT). Either node
+    alone is enough to drive captures; a lane running both produces two
+    triggers per ball, which pinfall.py's in-flight guard absorbs (see
+    _capture_in_flight there -- that overlap is one of the two cases it
+    exists for).
 
     Reconnects on drop with the same fixed-interval retry
     state_machine/bridge_client.py uses.
@@ -65,6 +73,6 @@ async def _handle(raw, on_ball_detected) -> None:
     msg = json.loads(raw)
     if msg.get("type") != "beamEvent":
         return
-    if msg.get("eventType") != EVENT_BEAM_BROKEN or msg.get("beamRole") != ROLE_DOWNSTREAM:
+    if msg.get("eventType") != EVENT_BEAM_BROKEN or msg.get("beamRole") not in TRIGGER_ROLES:
         return
     await on_ball_detected(msg["laneNumber"])

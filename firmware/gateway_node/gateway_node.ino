@@ -1,9 +1,10 @@
 // openlanelink -- GATEWAY NODE
 //
-// Downstream nodes (fouling, speed, pinsetter) register themselves on
-// startup by sending MSG_REGISTER, which this node adds as an ESP-NOW peer
-// on the fly -- no MACs are hardcoded here. Registration carries a nodeType
-// (in the `code` field) so the gateway knows what it just learned about.
+// Downstream nodes (fouling, speed, ball detect, pinsetter) register
+// themselves on startup by sending MSG_REGISTER, which this node adds as an
+// ESP-NOW peer on the fly -- no MACs are hardcoded here. Registration carries
+// a nodeType (in the `code` field) so the gateway knows what it just learned
+// about.
 //
 // Fouling nodes send per-lane MSG_LANE_EVENT (one fouling node can cover
 // several lanes). The gateway does NOT act on a FOUL itself -- it forwards
@@ -14,10 +15,13 @@
 // independent of the Pi's actual game state -- removed 2026-08-07, see
 // firmware/HANDOFF.md and state_machine/state_machine.py's FOUL_COOLDOWN_S.)
 //
-// Speed nodes send per-beam MSG_BEAM_EVENT. This gateway does no pairing or
-// interval math itself -- it just forwards raw beam events to the Pi. Pairing
-// upstream/downstream timestamps into a speed reading is timing/scheduling
-// logic and lives on the Pi side of the bridge, not in any node's firmware.
+// Speed nodes and ball detection nodes both send per-beam MSG_BEAM_EVENT,
+// told apart by data[0]'s BeamRole (0/1 = the speed node's paired beams,
+// 2 = the ball detection node's single near-pins beam). This gateway does no
+// pairing or interval math itself -- it just forwards raw beam events to the
+// Pi regardless of role. Pairing upstream/downstream timestamps into a speed
+// reading, and acting on a ball reaching the pins, are both timing/scheduling
+// logic that lives on the Pi side of the bridge, not in any node's firmware.
 //
 // The PINSETTER NODE owns the machine config (lane -> relays) and all A2
 // state (ball, cycling, cooldown). This gateway sends pure semantic
@@ -113,10 +117,18 @@ enum MsgType : uint8_t {
 
 enum NodeType : uint8_t {
   NODE_FOULING = 0, NODE_PINSETTER = 1, NODE_SCORING = 2, NODE_SPEED = 3,
+  NODE_BALL_DETECT = 4,
 };
 
 enum LaneEventCode : uint8_t { LANE_CLEAR = 0, LANE_FOUL = 1 };
 enum BeamEventCode : uint8_t { BEAM_CLEAR = 0, BEAM_BROKEN = 1 };
+
+// 0/1 are the speed node's paired beams; 2 is the ball detection node's
+// single near-pins beam, deliberately distinct so the Pi doesn't feed it
+// into speed pairing -- see PROTOCOL.md's MSG_BEAM_EVENT section.
+enum BeamRole : uint8_t {
+  ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1, ROLE_BALL_DETECT = 2,
+};
 
 enum CommandCode : uint8_t {
   CMD_CYCLE = 0, CMD_POWER_ON = 1, CMD_POWER_OFF = 2,
@@ -214,6 +226,9 @@ int registeredLaneNodeCount = 0;
 uint8_t registeredSpeedNodes[MAX_LANE_NODES][6];
 int registeredSpeedNodeCount = 0;
 
+uint8_t registeredBallDetectNodes[MAX_LANE_NODES][6];
+int registeredBallDetectNodeCount = 0;
+
 uint8_t pinsetterMac[6];
 bool pinsetterRegistered = false;
 
@@ -302,6 +317,34 @@ void registerSpeedNode(const uint8_t *mac) {
   Serial.println(macToString(mac));
 }
 
+bool isBallDetectNodeRegistered(const uint8_t *mac) {
+  for (int i = 0; i < registeredBallDetectNodeCount; i++) {
+    if (memcmp(registeredBallDetectNodes[i], mac, 6) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void registerBallDetectNode(const uint8_t *mac) {
+  if (isBallDetectNodeRegistered(mac)) return;
+  if (registeredBallDetectNodeCount >= MAX_LANE_NODES) {
+    Serial.println("Ball detect node table full, dropping registration");
+    return;
+  }
+  if (!addPeer(mac)) {
+    Serial.print("Failed to add ball detect node ");
+    Serial.print(macToString(mac));
+    Serial.println(" as ESP-NOW peer");
+    return;
+  }
+
+  memcpy(registeredBallDetectNodes[registeredBallDetectNodeCount], mac, 6);
+  registeredBallDetectNodeCount++;
+  Serial.print("Registered BALL DETECT node ");
+  Serial.println(macToString(mac));
+}
+
 void registerPinsetterNode(const uint8_t *mac) {
   if (pinsetterRegistered && memcmp(pinsetterMac, mac, 6) == 0) return;
   if (!addPeer(mac)) {
@@ -322,6 +365,7 @@ void handleRegister(const uint8_t *mac, const NodeMessage &msg) {
     case NODE_FOULING:   registerLaneNode(mac); break;
     case NODE_PINSETTER: registerPinsetterNode(mac); break;
     case NODE_SPEED:     registerSpeedNode(mac); break;
+    case NODE_BALL_DETECT: registerBallDetectNode(mac); break;
     case NODE_SCORING:
       // Vestigial -- scoring lives on the Pi over UART now, not as an
       // ESP-NOW node. No command path exists for this nodeType.
@@ -442,6 +486,15 @@ void processRS485Queue() {
   }
 }
 
+const char *beamRoleName(uint8_t role) {
+  switch (role) {
+    case ROLE_UPSTREAM:    return "upstream";
+    case ROLE_DOWNSTREAM:  return "downstream";
+    case ROLE_BALL_DETECT: return "ball_detect";
+    default:               return "UNKNOWN";
+  }
+}
+
 // Handles every msgType that can arrive on EITHER transport -- MSG_REGISTER
 // is the one exception (ESP-NOW only, needs a MAC to add as a peer; see
 // onDataRecv). Called from onDataRecv (ESP-NOW) and pollRS485 (RS485) alike,
@@ -476,7 +529,7 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       Serial.print(" MSG_BEAM_EVENT { lane=");
       Serial.print(msg.laneNumber);
       Serial.print(", role=");
-      Serial.print(msg.data[0] == 0 ? "upstream" : "downstream");
+      Serial.print(beamRoleName(msg.data[0]));
       Serial.print(", ");
       Serial.print(msg.code == BEAM_BROKEN ? "BROKEN" : "CLEAR");
       Serial.println(" }");
@@ -830,6 +883,7 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
     bool alreadyKnown =
       (msg.code == NODE_FOULING && isLaneNodeRegistered(info->src_addr)) ||
       (msg.code == NODE_SPEED && isSpeedNodeRegistered(info->src_addr)) ||
+      (msg.code == NODE_BALL_DETECT && isBallDetectNodeRegistered(info->src_addr)) ||
       (msg.code == NODE_PINSETTER && pinsetterRegistered &&
        memcmp(pinsetterMac, info->src_addr, 6) == 0);
     if (alreadyKnown) return;
@@ -861,6 +915,11 @@ void printStatus() {
   Serial.println(registeredSpeedNodeCount);
   for (int i = 0; i < registeredSpeedNodeCount; i++) {
     Serial.print("  "); Serial.println(macToString(registeredSpeedNodes[i]));
+  }
+  Serial.print("Ball detect nodes registered: ");
+  Serial.println(registeredBallDetectNodeCount);
+  for (int i = 0; i < registeredBallDetectNodeCount; i++) {
+    Serial.print("  "); Serial.println(macToString(registeredBallDetectNodes[i]));
   }
   Serial.print("Pinsetter node: ");
   Serial.println(pinsetterRegistered ? macToString(pinsetterMac) : "not registered");

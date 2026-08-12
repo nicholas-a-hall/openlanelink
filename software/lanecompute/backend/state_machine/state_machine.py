@@ -104,11 +104,58 @@ class LaneStateMachine:
             return
         self.state = State.BALL_IN_FLIGHT
 
-    def on_downstream_beam(self) -> None:
-        if self.state != State.BALL_IN_FLIGHT:
-            log.warning("Lane %s: downstream beam in state %s, ignored", self.lane_number, self.state.name)
+    def _ball_reached_pins(self, source: str, accepted_from: tuple) -> None:
+        """Shared tail of on_downstream_beam()/on_ball_detected(): move to
+        AWAITING_PINFALL, or explain why not.
+
+        Split out for the AWAITING_PINFALL case specifically, which is the
+        one state both methods must treat as ordinary rather than
+        suspicious. A lane covered by BOTH a speed node and a ball detection
+        node reports the same physical ball twice, and whichever edge lands
+        second necessarily arrives with the machine already in
+        AWAITING_PINFALL -- so a plain "unexpected state" warning would fire
+        once per ball, forever, on a configuration that is working exactly
+        as designed. (Which of the two lands second depends on beam
+        placement, so neither method can be the one that stays strict.)
+        Every other rejected state is still a warning: those mean a beam
+        broke while the rack was mid-cycle or with no game running, which is
+        worth noticing."""
+        if self.state in accepted_from:
+            self.state = State.AWAITING_PINFALL
             return
-        self.state = State.AWAITING_PINFALL
+        if self.state == State.AWAITING_PINFALL:
+            log.info("Lane %s: %s for a ball already awaiting pinfall, ignored", self.lane_number, source)
+            return
+        log.warning("Lane %s: %s in state %s, ignored", self.lane_number, source, self.state.name)
+
+    def on_downstream_beam(self) -> None:
+        self._ball_reached_pins("downstream beam", (State.BALL_IN_FLIGHT,))
+
+    def on_ball_detected(self) -> None:
+        """The ball reached the pin deck -- a ball_detect_node's near-pins
+        beam broke (protocol.ROLE_BALL_DETECT; see firmware/PROTOCOL.md and
+        main.py's on_beam_event()). Lands on the same AWAITING_PINFALL state
+        on_downstream_beam() does, but is deliberately accepted from READY
+        as well as BALL_IN_FLIGHT.
+
+        That looser guard is the whole point of it being a separate method.
+        BALL_IN_FLIGHT is only ever entered by an UPSTREAM beam, which only
+        a speed node emits -- so on a lane with a ball_detect_node and no
+        speed node (the two are independent, either can be deployed alone),
+        the strict check would reject every single ball, log a warning per
+        delivery, and leave machineState reporting READY while a ball is
+        visibly sitting in the pit. Scoring itself would survive that (the
+        pinfall path is ungated by design -- see on_pinfall_observed()), but
+        every state-driven client watching the feed would be wrong.
+
+        Still guarded rather than accepted from anywhere: AWAITING_PINFALL
+        means a duplicate/bounced trigger for a ball already being handled,
+        and PINSETTER_BUSY means the rack is mid-cycle, so a beam break
+        there is the sweep or a stray hand, not a delivery. Neither should
+        move the machine (see _ball_reached_pins() for how the two are
+        logged differently).
+        """
+        self._ball_reached_pins("ball detected", (State.READY, State.BALL_IN_FLIGHT))
 
     def on_foul(self) -> None:
         """USBC Rule 9. A foul counts as a ball delivered and scores zero;

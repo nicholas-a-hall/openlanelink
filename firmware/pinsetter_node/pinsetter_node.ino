@@ -153,6 +153,7 @@ enum MsgType : uint8_t {
 
 enum NodeType : uint8_t {
   NODE_FOULING = 0, NODE_PINSETTER = 1, NODE_SCORING = 2, NODE_SPEED = 3,
+  NODE_BALL_DETECT = 4,
 };
 
 enum CommandCode : uint8_t {

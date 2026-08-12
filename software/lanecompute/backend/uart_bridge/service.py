@@ -202,13 +202,16 @@ async def debug_beam_event(body: DebugBeamEventBody):
     Touches nothing on the serial link -- it only broadcasts, so the
     gateway/mesh never sees it and no pinsetter command results.
 
-    Exists because the downstream-beam break is the trigger every
+    Exists because a ball-at-the-pins beam break is the trigger every
     beam-driven consumer keys off (../vision's self-triggered capture, see
     its bridge_client.py; state_machine's BALL_IN_FLIGHT/AWAITING_PINFALL
     transitions), and until a real speed_node/ball_detect_node is wired up
-    there was no way to exercise those paths end to end at all. Defaults
+    there is no way to exercise those paths end to end at all. Defaults
     match "a ball just reached the pins" (downstream beam, BROKEN edge),
-    which is the case worth replaying most often."""
+    which is the case worth replaying most often -- pass
+    beam_role=ROLE_BALL_DETECT (2) instead to replay a ball_detect_node's
+    near-pins beam, which every consumer treats the same way except
+    state_machine's speed pairing (see protocol.py's ROLE_BALL_DETECT)."""
     ev = p.BeamEvent(body.event_type, body.lane_number, body.beam_role, int(time.monotonic() * 1000) % (2 ** 32))
     log.info("injecting synthetic BeamEvent: %s", ev)
     on_beam_event(ev)

@@ -14,7 +14,7 @@ See the [full background and concept](https://nicholas-a-hall.github.io/openlane
 
 | Path | What's there |
 |---|---|
-| [`firmware/`](firmware) | ESP32 firmware for gateway, pinsetter, fouling, and speed nodes — ESP-NOW mesh + RS-485 fallback transport |
+| [`firmware/`](firmware) | ESP32 firmware for gateway, pinsetter, fouling, speed, and ball detection nodes — ESP-NOW mesh + RS-485 fallback transport |
 | `hardware/` | Hardware references and board notes (placeholder — empty for now) |
 | [`software/lanecompute/`](software/lanecompute) | Per-lane compute node: FastAPI scoring/state-machine backend, vision (pin detection), and the React bowler/overhead UI |
 | [`software/openlanescheduler/`](software/openlanescheduler) | Lane reservation and maintenance scheduler — manager dashboard, lane kiosks, mechanics module |

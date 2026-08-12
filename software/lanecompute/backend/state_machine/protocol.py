@@ -28,6 +28,13 @@ EVENT_BEAM_BROKEN = 4
 
 ROLE_UPSTREAM = 0
 ROLE_DOWNSTREAM = 1
+# ball_detect_node.ino's single near-pins beam. Deliberately NOT reported as
+# ROLE_DOWNSTREAM even though it means the same physical thing ("the ball
+# reached the pins"): 0/1 are the speed node's PAIRED beams, and main.py's
+# on_beam_event() pops its pending upstream timestamp on any downstream edge.
+# A ball-detect beam wearing that role would consume the pairing and report a
+# fabricated ball speed on a lane covered by both nodes.
+ROLE_BALL_DETECT = 2
 
 # Mirrors firmware/PROTOCOL.md's StatusCode -- MUST match gateway_node.ino
 # and pinsetter_node.ino exactly. Only STATUS_CYCLE_COMPLETE is consumed by

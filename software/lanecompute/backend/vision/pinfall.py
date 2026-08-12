@@ -78,6 +78,15 @@ API_PORT = 8200
 # for roughly the first 100-200ms of this window -- 500ms after the beam is
 # only ~300-400ms of real settling time after impact.
 #
+# How much travel time is in that window depends on WHICH node triggered, and
+# this single constant covers both: a ball_detect_node's beam sits just
+# before the pin deck (so nearly the whole window is settling time), while a
+# speed_node's downstream beam is further back (so more of it is flight). A
+# lane running both triggers off whichever fires first, i.e. the speed node's.
+# If one node's placement ends up wanting a materially different delay than
+# the other's, that's the point to split this into a per-role value rather
+# than keep compromising between them.
+#
 # TUNE ON REAL HARDWARE, and tune it by watching for UNDERCOUNTS
 # specifically: this delay's failure mode is asymmetric. Too long only
 # costs latency, but too short reads a pin that is mid-topple (still
@@ -510,11 +519,12 @@ detector = _LaneDetector()
 # second.
 #
 # What it's actually defending against is unchanged: a bounced or re-broken
-# beam (speed_node debounces at 30ms, so a re-break past that emits a second
-# BROKEN), and a lane covered by BOTH a speed_node and a ball_detect_node,
-# where two sensors legitimately report the same ball. Neither is a
-# "too soon" problem, they're a "this ball is already being handled"
-# problem, so that's what's tracked.
+# beam (both emitting nodes debounce at 30ms, so a re-break past that emits a
+# second BROKEN), and a lane covered by BOTH a speed_node and a
+# ball_detect_node, where two sensors legitimately report the same ball --
+# no longer hypothetical as of 2026-08-12, when ball_detect_node was
+# actually built. Neither is a "too soon" problem, they're a "this ball is
+# already being handled" problem, so that's what's tracked.
 #
 # It matters that this is a duplicate-SCORE guard and not just a
 # duplicate-work one. A second report for one ball reaches state_machine's
@@ -550,10 +560,10 @@ async def _report_standing_mask(lane: int, standing_mask: int) -> None:
 
 async def _on_ball_detected(lane: int) -> None:
     """Callback for bridge_client.watch_ball_detected() -- fires on every
-    downstream ball-detection beam break for a lane (speed_node today,
-    ball_detect_node once it exists; see that module's docstring). Applies
-    the same settle-then-capture shape as a manual /capture/{lane} call,
-    just self-triggered instead of operator- or bench-triggered.
+    ball-at-the-pins beam break for a lane, from either emitting node (see
+    that module's TRIGGER_ROLES). Applies the same settle-then-capture shape
+    as a manual /capture/{lane} call, just self-triggered instead of
+    operator- or bench-triggered.
 
     The in-flight guard covers the whole settle-capture-report span, not
     just the capture: the duplicate trigger this exists to absorb (a bounced

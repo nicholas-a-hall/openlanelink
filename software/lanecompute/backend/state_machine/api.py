@@ -321,23 +321,29 @@ async def report_pinfall(lane: int, body: PinfallObserved):
 # calls; it shouldn't be the only one.
 
 class BeamObserved(BaseModel):
-    role: str  # "upstream" | "downstream"
+    role: str  # "upstream" | "downstream" | "ball_detect"
 
 
 @app.post("/api/lanes/{lane}/beam")
 async def report_beam(lane: int, body: BeamObserved):
-    """Beam-sensor edge -- stands in for a speed node's MSG_BEAM_EVENT once
-    it's paired and forwarded here (main.py's on_beam_event does the same
-    thing for the real hardware path, plus speed-pairing math this endpoint
-    doesn't attempt). Drives READY -> BALL_IN_FLIGHT -> AWAITING_PINFALL."""
+    """Beam-sensor edge -- stands in for a speed node's or ball detection
+    node's MSG_BEAM_EVENT once it's forwarded here (main.py's on_beam_event
+    does the same thing for the real hardware path, plus speed-pairing math
+    this endpoint doesn't attempt). upstream/downstream drive
+    READY -> BALL_IN_FLIGHT -> AWAITING_PINFALL; ball_detect reaches
+    AWAITING_PINFALL directly, since a lane with only a ball detection node
+    never sees an upstream edge at all (see state_machine.py's
+    on_ball_detected())."""
     _require_valid_lane(lane)
     machine = state_machine.get_machine(lane, _bridge_object())
     if body.role == "upstream":
         machine.on_upstream_beam()
     elif body.role == "downstream":
         machine.on_downstream_beam()
+    elif body.role == "ball_detect":
+        machine.on_ball_detected()
     else:
-        raise HTTPException(status_code=400, detail=f"unknown beam role {body.role!r}, expected upstream/downstream")
+        raise HTTPException(status_code=400, detail=f"unknown beam role {body.role!r}, expected upstream/downstream/ball_detect")
     await broadcast_state(lane)
     return _lane_snapshot(lane)
 

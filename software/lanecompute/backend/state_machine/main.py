@@ -77,6 +77,18 @@ async def on_beam_event(ev):
 
     machine = state_machine.get_machine(ev.lane_number, bridge)
 
+    if ev.beam_role == protocol.ROLE_BALL_DETECT:
+        # A ball_detect_node's near-pins beam. Same "ball reached the pins"
+        # meaning as the downstream case below, but handled first and
+        # returned early on purpose: it has no pairing partner, so it must
+        # NOT touch _pending_upstream. Falling through would pop a speed
+        # node's pending upstream reading and turn it into a fabricated mph
+        # figure measured over the wrong beam spacing entirely. See
+        # protocol.py's ROLE_BALL_DETECT.
+        machine.on_ball_detected()
+        await api.broadcast_state(ev.lane_number)
+        return
+
     if ev.beam_role == protocol.ROLE_UPSTREAM:
         _pending_upstream[ev.lane_number] = (ev.timestamp_ms, time.monotonic())
         machine.on_upstream_beam()

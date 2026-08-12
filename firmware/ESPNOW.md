@@ -28,12 +28,13 @@ passively receive without being added as a peer — see "Known gaps" at the
 bottom.
 
 ```
-   fouling ─┐
-   speed   ─┼══► gateway ◄══► pinsetter   (══ = ESP-NOW + RS485, dual-sent;
-  (scoring) ─┘        │                     RS485 is one shared bus, not
-                       ▼ UART (framed,       separate wires per node)
-                          separate protocol)
-                   Pi (scoring compute)
+   fouling     ─┐
+   speed       ─┼══► gateway ◄══► pinsetter   (══ = ESP-NOW + RS485, dual-sent;
+   ball detect ─┤        │                      RS485 is one shared bus, not
+  (scoring)    ─┘        │                      separate wires per node)
+                          ▼ UART (framed,
+                             separate protocol)
+                      Pi (scoring compute)
 ```
 
 ## One message shape for everything, on every transport
@@ -79,9 +80,32 @@ sensors total. Registers as `NODE_SPEED`. Does no timing/pairing math itself
 
 | | |
 |---|---|
-| **Emits** | `MSG_REGISTER{code=NODE_SPEED}` — boot + every 10s, **ESP-NOW only**.<br>`MSG_BEAM_EVENT{code=BEAM_BROKEN\|BEAM_CLEAR, laneNumber, data[0]=beamRole}` — on every debounced (30ms) sensor edge, per beam, **dual-sent on ESP-NOW and RS485**. `beamRole`: 0=upstream, 1=downstream. |
+| **Emits** | `MSG_REGISTER{code=NODE_SPEED}` — boot + every 10s, **ESP-NOW only**.<br>`MSG_BEAM_EVENT{code=BEAM_BROKEN\|BEAM_CLEAR, laneNumber, data[0]=beamRole}` — on every debounced (30ms) sensor edge, per beam, **dual-sent on ESP-NOW and RS485**. `beamRole`: 0=upstream, 1=downstream (2 is the ball detection node's, never emitted here). |
 | **Accepts** | Nothing, on either transport. Same as the fouling node — no recv callback, never reads RS485, pure sensor emitter. |
 | **Heartbeat** | Only the 10s `MSG_REGISTER` re-announce, ESP-NOW only. |
+
+## Ball detection node — `ball_detect_node.ino`
+Covers **two lanes**, one break-beam sensor each, sited just **before the pin
+deck**. Registers as `NODE_BALL_DETECT`. Its one output is "a ball has arrived
+at the pins on lane N" — the edge that starts the vision-capture → score →
+pinsetter-cycle sequence on the Pi. Does no counting/timing of its own.
+
+| | |
+|---|---|
+| **Emits** | `MSG_REGISTER{code=NODE_BALL_DETECT}` — boot + every 10s, **ESP-NOW only**.<br>`MSG_BEAM_EVENT{code=BEAM_BROKEN\|BEAM_CLEAR, laneNumber, data[0]=ROLE_BALL_DETECT}` — on every debounced (30ms) sensor edge, per lane, **dual-sent on ESP-NOW and RS485**. Same message type as the speed node's, distinguished **only** by `beamRole` = 2 (vs. the speed node's 0/1). |
+| **Accepts** | Nothing, on either transport. Same as the fouling and speed nodes — no recv callback, never reads RS485, pure sensor emitter. |
+| **Heartbeat** | Only the 10s `MSG_REGISTER` re-announce, ESP-NOW only. |
+
+**Independent of the speed node, not a replacement for or a dependency of
+it.** Either can be deployed alone: a lane with only a speed node still gets
+its near-pins trigger off `ROLE_DOWNSTREAM`, and a lane with only a ball
+detection node reaches `AWAITING_PINFALL` directly (`state_machine.py`'s
+`on_ball_detected()` accepts it from `READY`, since nothing would ever emit
+the upstream edge that `BALL_IN_FLIGHT` requires). A lane running both fires
+two triggers per ball; `vision/pinfall.py`'s in-flight guard absorbs the
+duplicate, and the distinct role is what keeps the ball-detect edge out of
+the speed pairing — see `PROTOCOL.md`'s `MSG_BEAM_EVENT` for why that
+mattered enough to spend an enum value on.
 
 ## Pinsetter interface node — `pinsetter_node.ino`
 Waveshare ESP32-S3-(POE-)ETH-8DI-8RO. Covers **one lane pair** (up to two
@@ -106,7 +130,7 @@ The hub. Not itself discovered by anything (every other node hardcodes its MAC).
 | **Emits (to pinsetter, dual-sent ESP-NOW + RS485)** | Bench-console-triggered: `CMD_CYCLE`, `CMD_RERACK`, `CMD_RESPOT`, `CMD_POWER_ON/OFF`, `CMD_STATUS`. `UART_PINSETTER_COMMAND` from the Pi passes through any `CommandCode` the same way (generalized 2026-07-18 from a cycle-only message, so the Pi's REST API can also issue re-rack, not just cycle) — this is now also how a `LANE_FOUL`'s rerack reaches the pinsetter, via the Pi rather than a local gateway decision (see below). Every `CMD_CYCLE`/`CMD_RERACK` now also carries `data[0]=cycleCount` (2026-08-07) — the bench console picks a literal default (1 for cycle, 2 for rerack, no ball state to consult); `UART_PINSETTER_COMMAND` from the Pi passes through whatever count the Pi computed. ESP-NOW send is gated on the pinsetter being registered; RS485 send is gated only on the hardware being present (`RS485_ENABLED`) — so RS485 keeps working even if ESP-NOW registration never completed. |
 | **Emits (broadcast, both transports)** | `MSG_SCORE_EVENT{laneNumber, code=ballNumber, data[0..1]=pinfallMask}` — only when the Pi sends `UART_SCORE_EVENT`. Sent to ESP-NOW's `FF:FF:FF:FF:FF:FF` (the one message type that isn't per-peer unicast on ESP-NOW) and enqueued on RS485, which is inherently broadcast on a shared bus — no separate broadcast address needed there. No node currently consumes it; see "Known gaps" below. |
 | **Emits (ack, dual-sent ESP-NOW + RS485)** | `MSG_ACK{code=MSG_STATUS, seq}` back to the pinsetter for each `MSG_STATUS` received, on whichever transport(s) are available — regardless of which transport the status arrived on. |
-| **Accepts (from mesh)** | `MSG_REGISTER` from any node, ESP-NOW only (dispatches by `code`/`NodeType` to the fouling/speed/pinsetter registration tables — this is the one case still handled separately, since it needs a MAC). `MSG_LANE_EVENT` from fouling nodes, `MSG_BEAM_EVENT` from speed nodes, and `MSG_STATUS` from the pinsetter — **all on either ESP-NOW or RS485**, all dispatched through the same shared `handleIncomingNodeMessage()` function, so the response is identical regardless of which wire the message came in on. |
+| **Accepts (from mesh)** | `MSG_REGISTER` from any node, ESP-NOW only (dispatches by `code`/`NodeType` to the fouling/speed/ball-detect/pinsetter registration tables — this is the one case still handled separately, since it needs a MAC). `MSG_LANE_EVENT` from fouling nodes, `MSG_BEAM_EVENT` from speed **or ball detection** nodes (forwarded verbatim either way — the gateway doesn't branch on `beamRole`, it just passes it through for the Pi to key off), and `MSG_STATUS` from the pinsetter — **all on either ESP-NOW or RS485**, all dispatched through the same shared `handleIncomingNodeMessage()` function, so the response is identical regardless of which wire the message came in on. |
 | **Accepts (bench console, serial @9600, not ESP-NOW)** | `cycle <lane>`, `rerack <lane>`, `respot <lane>`, `power <lane> on\|off`, `pstatus`, `status`. |
 | **Foul handling** | None on the gateway anymore (removed 2026-08-07). `MSG_LANE_EVENT{LANE_FOUL}` is forwarded to the Pi exactly like `LANE_CLEAR`, with no cooldown and no `CMD_RERACK` sent from here. The per-lane debounce (a trip over the foul line produces several edges in quick succession) and the rerack decision both moved to `state_machine/state_machine.py`'s `on_foul()`/`FOUL_COOLDOWN_S` (0.75s), which has real game state to decide with. Bench-console `cycle`/`rerack` are unaffected. |
 | **Heartbeat** | None outbound — the gateway is passive/central, it only reacts. It has no timeout/offline-detection for nodes that stop re-registering (see "One message shape" note above). |
@@ -156,8 +180,10 @@ serial, done. No commands, no events, no heartbeat.
   each gateway's mesh has at most one node of each type, so `msgType` alone
   tells the receiver who must have sent a given frame. If a future topology
   puts two nodes of the *same* type on one RS485 bus, that assumption breaks
-  and real addressing has to be added; not designed for yet. See
-  `PROTOCOL.md`'s "RS485 framing".
+  and real addressing has to be added; not designed for yet. The ball
+  detection node (2026-08-12) makes `MSG_BEAM_EVENT` the first message type
+  with two possible senders without breaking this, because no receiver needs
+  to know *which board* sent one — see `PROTOCOL.md`'s "RS485 framing".
 - **Dynamic gateway discovery is not implemented.** See `HANDOFF.md`'s
   design-principles section — hardcoded `GATEWAY_MAC` per node is the
   current approach, explicitly not the intended end state.
