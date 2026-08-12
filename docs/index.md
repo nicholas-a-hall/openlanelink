@@ -3,8 +3,6 @@ layout: default
 title: Open Lane Link
 ---
 
-**Setting up a real installation?** See [Installing one lane pair]({{ '/installation' | relative_url }}) for the practical, step-by-step version of what's below.
-
 ## Background
 
 My family and I bought a small, inactive bowling alley in Hillsboro Illinois after a personally, professionally, and financially difficult year. We looked around in our local community and found few places for people to gather together and have a good time. Our idea was simple - there isn't much for our kids to do, so let's build something for them. Our friends and neighbors can come, too.
@@ -61,8 +59,6 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 - **Commodity hardware only**: no purpose-built boards where an ESP32 + off-the-shelf sensor does the job. Cost and repairability over elegance.
 
 ## Architecture overview
-
-![Critical path diagram]({{ '/assets/critical-path.svg' | relative_url }})
 
 Every major component service and its current implementation status. **Green** is implemented and tested, **gold** is in progress or awaiting verification, **blue** is future work.
 
