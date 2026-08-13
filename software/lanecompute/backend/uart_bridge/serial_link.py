@@ -41,13 +41,23 @@ class SerialLink:
     # attached, and recovers on its own once a gateway is plugged in.
     RECONNECT_INTERVAL_S = 5.0
 
-    def __init__(self, port: str, baud: int = 115200, on_lane_event=None, on_beam_event=None, on_status_event=None):
+    def __init__(self, port: str, baud: int = 115200, on_lane_event=None, on_beam_event=None,
+                 on_status_event=None, on_node_seen=None, on_peer_table_ack=None,
+                 on_connect=None):
         self.port = port
         self.baud = baud
         self._ser: serial.Serial | None = None
         self._on_lane_event = on_lane_event
         self._on_beam_event = on_beam_event
         self._on_status_event = on_status_event
+        self._on_node_seen = on_node_seen
+        self._on_peer_table_ack = on_peer_table_ack
+        # Fired after the port opens, so the peer allowlist can be re-pushed
+        # to a gateway that may have rebooted while we weren't attached. The
+        # gateway keeps its own NVS copy, so this is a convergence step rather
+        # than a prerequisite -- but without it an allowlist edited while the
+        # link was down would never reach the gateway.
+        self._on_connect = on_connect
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         # Monotonic timestamp of the last successfully-checksummed frame,
@@ -74,6 +84,11 @@ class SerialLink:
         try:
             self._ser = serial.Serial(self.port, self.baud, timeout=0.05)
             log.info("UART connected on %s @ %d baud", self.port, self.baud)
+            if self._on_connect:
+                try:
+                    self._on_connect(self)
+                except Exception:
+                    log.exception("on_connect hook failed -- link stays up regardless")
             return True
         except serial.SerialException as e:
             log.warning("could not open UART port %s: %s", self.port, e)
@@ -105,6 +120,11 @@ class SerialLink:
         # pass an explicit count derived from the pinsetter's own reported
         # ball number.
         self.send_pinsetter_command(p.CMD_RERACK, lane_number, cycle_count)
+
+    def send_peer_table(self, generation: int, entries):
+        """Push the authoritative allowlist. One frame, so the gateway applies
+        it atomically -- see protocol.encode_peer_table()."""
+        self._send_frame(p.UART_PEER_TABLE, p.encode_peer_table(generation, entries))
 
     def send_score_event(self, lane_number: int, ball_number: int, pinfall_mask: int, timestamp_ms: int):
         side = lane_map.side_for_lane(lane_number)
@@ -200,5 +220,11 @@ class SerialLink:
         elif msg_type == p.UART_PINSETTER_STATUS:
             if self._on_status_event:
                 self._on_status_event(p.StatusEvent.decode(body))
+        elif msg_type == p.UART_NODE_SEEN:
+            if self._on_node_seen:
+                self._on_node_seen(p.NodeSeenEvent.decode(body))
+        elif msg_type == p.UART_PEER_TABLE_ACK:
+            if self._on_peer_table_ack:
+                self._on_peer_table_ack(p.PeerTableAck.decode(body))
         else:
             log.warning("unhandled UART message type 0x%02x", msg_type)

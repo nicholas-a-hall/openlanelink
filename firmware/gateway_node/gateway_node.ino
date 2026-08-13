@@ -6,6 +6,15 @@
 // a nodeType (in the `code` field) so the gateway knows what it just learned
 // about.
 //
+// WHICH NODES BELONG TO THIS GATEWAY is decided by the Pi, not here: it owns
+// an allowlist of {MAC, nodeType} and pushes it down over UART, this board
+// caches it in NVS and enforces it on every inbound ESP-NOW frame. Every
+// registration attempt -- accepted or refused -- is reported upstream as
+// UART_NODE_SEEN so an operator can see a node being turned away instead of
+// having to guess why a lane is dead. Until a table has ever been pushed the
+// gateway stays UNGOVERNED and accepts anyone, exactly as it did before this
+// existed. See the "Peer registry" section below.
+//
 // ONE GATEWAY == ONE LANE PAIR == ONE MESH. Everything on this mesh is
 // addressed by which SIDE of the pair it concerns (LaneSide::A /
 // LaneSide::B), never by a lane number -- that's what lets every leaf sketch
@@ -79,6 +88,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <HardwareSerial.h>
+#include <Preferences.h>
 
 #include <lanelink_protocol.h>
 #include <lanelink_rs485.h>
@@ -181,25 +191,100 @@ enum UartMsgType : uint8_t {
   UART_LANE_EVENT         = 0x01,
   UART_BEAM_EVENT         = 0x02,
   UART_PINSETTER_STATUS   = 0x03,  // forwards a pinsetter MSG_STATUS verbatim (any StatusCode, including STATUS_CYCLE_COMPLETE)
+  UART_NODE_SEEN          = 0x04,  // a node tried to register -- see the peer registry section below
+  UART_PEER_TABLE_ACK     = 0x05,  // confirms which allowlist generation is actually live here
   // Pi -> Gateway
   UART_PINSETTER_COMMAND = 0x10,  // any CommandCode -- generalized from the old cycle-only message
   UART_SCORE_EVENT       = 0x11,
+  UART_PEER_TABLE        = 0x12,  // the Pi's authoritative allowlist, whole table in one frame
+};
+
+// What happened when a node tried to register. Reported to the Pi so an
+// operator can see rejections, not just successes -- a node silently refused
+// is exactly the symptom that's impossible to diagnose from the lane.
+enum NodeSeenStatus : uint8_t {
+  NODE_UNGOVERNED          = 0,  // no allowlist configured yet: accepted, see allowlistValid
+  NODE_ACCEPTED            = 1,
+  NODE_REJECTED_NOT_LISTED = 2,
+  NODE_REJECTED_WRONG_TYPE = 3,  // listed MAC, but claiming a different NodeType
+};
+
+struct UartNodeSeenPayload {   // matches uart_bridge/protocol.py's _NODE_SEEN_FMT
+  uint8_t mac[6];
+  uint8_t nodeType;            // NodeType
+  uint8_t status;              // NodeSeenStatus
+  uint32_t timestampMs;        // 4-byte aligned at offset 8 already -- no padding
+};
+
+struct UartPeerTableAckPayload {   // matches uart_bridge/protocol.py's _PEER_TABLE_ACK_FMT
+  uint16_t generation;
+  uint8_t count;
 };
 
 // ============================================================
+// Peer registry -- WHICH NODES BELONG TO THIS GATEWAY
+//
+// Every node hardcodes its GATEWAY_MAC, so a correctly-flashed node can only
+// ever reach its own gateway over ESP-NOW unicast. A MISflashed one reaches
+// whichever gateway that MAC names, and until this existed the gateway
+// accepted it permanently and silently -- and since every leaf sketch is now
+// byte-identical across lane pairs (they report side A/B, not lane numbers),
+// its events are indistinguishable from the real node's. Hence an allowlist.
+//
+// The Pi owns that allowlist; this table is a cache of it. The root of trust
+// is the UART cable: the Pi is physically wired to exactly one gateway, which
+// is the only unforgeable "this one is mine" signal in the system.
+//
+// SCOPE: enforced on ESP-NOW only. RS485 frames carry no sender address at
+// all, so there is nothing to check them against -- that transport is trusted
+// because each lane pair has its own physically isolated bus segment. That
+// isolation is a load-bearing install requirement, not a convention; see
+// firmware/PROTOCOL.md and docs/installation.md.
+// ============================================================
 
-const int MAX_LANE_NODES = 8;
-uint8_t registeredLaneNodes[MAX_LANE_NODES][6];
-int registeredLaneNodeCount = 0;
+#define MAX_PEERS 8
 
-uint8_t registeredSpeedNodes[MAX_LANE_NODES][6];
-int registeredSpeedNodeCount = 0;
+// One table replaces the four type-split registration arrays this file used
+// to keep (fouling/speed/ball-detect/pinsetter). An allowlist is inherently
+// one MAC->NodeType mapping and enforcement needs a MAC lookup across all
+// types on every inbound frame, so splitting by type meant maintaining two
+// parallel structures for no gain.
+struct PeerEntry {
+  uint8_t mac[6];
+  uint8_t nodeType;
+  bool used;
+};
 
-uint8_t registeredBallDetectNodes[MAX_LANE_NODES][6];
-int registeredBallDetectNodeCount = 0;
+PeerEntry peers[MAX_PEERS];          // nodes actually registered right now
+PeerEntry allowlist[MAX_PEERS];      // who the Pi says is allowed to
+uint8_t allowlistCount = 0;
+uint16_t allowlistGeneration = 0;
 
-uint8_t pinsetterMac[6];
-bool pinsetterRegistered = false;
+// FAIL OPEN UNTIL PROVISIONED, FAIL CLOSED AFTER. False means no allowlist
+// has ever been pushed or restored from NVS: accept everything and report it
+// as NODE_UNGOVERNED, which is exactly the behavior this gateway had before
+// the registry existed. A fresh install therefore still comes up on its own,
+// and the Pi can watch who appears before locking anything down. Failing
+// closed on an empty NVS instead would brick a lane on any
+// provisioning-order mistake -- a much worse default than the status quo.
+bool allowlistValid = false;
+
+Preferences prefs;
+
+// Rate-limits UART_NODE_SEEN. Nodes re-register every 10s forever; the Pi
+// needs first sighting, status changes, and coarse liveness -- not every beat.
+// Sized larger than MAX_PEERS because it also has to hold the strangers being
+// rejected, which are the whole reason it exists.
+#define NODE_SEEN_REFRESH_MS 30000
+#define SEEN_REPORT_SLOTS (MAX_PEERS * 2)
+
+struct SeenReport {
+  uint8_t mac[6];
+  uint8_t status;
+  unsigned long at;
+  bool used;
+};
+SeenReport seenReports[SEEN_REPORT_SLOTS];
 
 uint8_t nextSeq = 0;   // for traceability in logs -- this node's outbound MSG_COMMAND/MSG_SCORE_EVENT aren't acked
 
@@ -211,6 +296,7 @@ void forwardBeamEventToPi(const NodeMessage &msg);
 void forwardStatusToPi(const NodeMessage &msg);
 void logMachineRecords(const uint8_t *data);
 void handleSerialCommand(String cmd);
+void sendToPi(UartMsgType msgType, const uint8_t *data, uint8_t dataLen);
 
 String macToString(const uint8_t *mac) {
   char buf[18];
@@ -238,124 +324,254 @@ bool addPeer(const uint8_t *mac) {
   return esp_now_add_peer(&peerInfo) == ESP_OK;
 }
 
-// ---- Registration ----
-bool isLaneNodeRegistered(const uint8_t *mac) {
-  for (int i = 0; i < registeredLaneNodeCount; i++) {
-    if (memcmp(registeredLaneNodes[i], mac, 6) == 0) {
+// ---- Peer registry: allowlist, persistence, registration ----
+int findPeerSlot(PeerEntry *table, const uint8_t *mac) {
+  for (int i = 0; i < MAX_PEERS; i++) {
+    if (table[i].used && memcmp(table[i].mac, mac, 6) == 0) return i;
+  }
+  return -1;
+}
+
+// Decides whether this MAC may join, WITHOUT recording anything -- callers
+// report the result to the Pi either way, so a rejection is visible instead
+// of being a silent no-op on the lane.
+NodeSeenStatus judgeRegistration(const uint8_t *mac, uint8_t nodeType) {
+  if (!allowlistValid) return NODE_UNGOVERNED;
+  int i = findPeerSlot(allowlist, mac);
+  if (i < 0) return NODE_REJECTED_NOT_LISTED;
+  // A listed MAC claiming a different role means a misflash or a stale
+  // entry. Both are worth stopping rather than quietly re-binding the role.
+  if (allowlist[i].nodeType != nodeType) return NODE_REJECTED_WRONG_TYPE;
+  return NODE_ACCEPTED;
+}
+
+bool isAllowedPeer(const uint8_t *mac) {
+  if (!allowlistValid) return true;
+  return findPeerSlot(allowlist, mac) >= 0;
+}
+
+void persistAllowlist() {
+  prefs.begin("lanelink", false);
+  prefs.putUShort("gen", allowlistGeneration);
+  prefs.putUChar("count", allowlistCount);
+  prefs.putBytes("list", allowlist, sizeof(allowlist));
+  prefs.end();
+}
+
+// Restored before ESP-NOW comes up, so a gateway that boots with the Pi down
+// still enforces the last table it was given rather than reverting to
+// accepting everyone.
+void loadAllowlist() {
+  prefs.begin("lanelink", true);
+  bool present = prefs.isKey("count");
+  if (present) {
+    allowlistGeneration = prefs.getUShort("gen", 0);
+    allowlistCount = prefs.getUChar("count", 0);
+    prefs.getBytes("list", allowlist, sizeof(allowlist));
+    allowlistValid = true;
+  }
+  prefs.end();
+
+  if (!allowlistValid) {
+    Serial.println("No peer allowlist in NVS -- UNGOVERNED: accepting any node that registers.");
+    Serial.println("  (the Pi will see them via UART_NODE_SEEN and can lock this down)");
+    return;
+  }
+  Serial.print("Peer allowlist restored from NVS: gen ");
+  Serial.print(allowlistGeneration);
+  Serial.print(", ");
+  Serial.print(allowlistCount);
+  Serial.println(" entries");
+  for (int i = 0; i < MAX_PEERS; i++) {
+    if (!allowlist[i].used) continue;
+    Serial.print("    "); Serial.print(macToString(allowlist[i].mac));
+    Serial.print(" "); Serial.println(nodeTypeName(allowlist[i].nodeType));
+  }
+}
+
+// Drops a peer that is no longer allowed: removes the ESP-NOW peer entry so
+// this gateway stops being able to send TO it, alongside the receive-side
+// check in onDataRecv() that stops it being heard FROM.
+void revokePeer(int slot) {
+  Serial.print("Revoking peer ");
+  Serial.println(macToString(peers[slot].mac));
+  if (esp_now_is_peer_exist(peers[slot].mac)) esp_now_del_peer(peers[slot].mac);
+  peers[slot].used = false;
+}
+
+// Called after a new allowlist lands: anything registered but no longer
+// listed goes immediately, rather than lingering until it happens to reboot.
+void reconcilePeersAgainstAllowlist() {
+  for (int i = 0; i < MAX_PEERS; i++) {
+    if (!peers[i].used) continue;
+    if (!isAllowedPeer(peers[i].mac)) revokePeer(i);
+  }
+}
+
+void registerPeer(const uint8_t *mac, uint8_t nodeType) {
+  if (findPeerSlot(peers, mac) >= 0) return;   // already known, silent
+
+  int slot = -1;
+  for (int i = 0; i < MAX_PEERS; i++) {
+    if (!peers[i].used) { slot = i; break; }
+  }
+  if (slot < 0) {
+    Serial.println("Peer table full, dropping registration");
+    return;
+  }
+  if (!addPeer(mac)) {
+    Serial.print("Failed to add ");
+    Serial.print(macToString(mac));
+    Serial.println(" as ESP-NOW peer");
+    return;
+  }
+
+  memcpy(peers[slot].mac, mac, 6);
+  peers[slot].nodeType = nodeType;
+  peers[slot].used = true;
+
+  Serial.print("Registered ");
+  Serial.print(nodeTypeName(nodeType));
+  Serial.print(" node ");
+  Serial.println(macToString(mac));
+}
+
+// The pinsetter is the only node this gateway sends unicast TO, so its MAC
+// still needs a direct lookup -- but it comes out of the shared table now
+// rather than a field maintained beside it.
+bool pinsetterMac(uint8_t *out) {
+  for (int i = 0; i < MAX_PEERS; i++) {
+    if (peers[i].used && peers[i].nodeType == NODE_PINSETTER) {
+      memcpy(out, peers[i].mac, 6);
       return true;
     }
   }
   return false;
 }
 
-void registerLaneNode(const uint8_t *mac) {
-  if (isLaneNodeRegistered(mac)) return;
-  if (registeredLaneNodeCount >= MAX_LANE_NODES) {
-    Serial.println("Lane node table full, dropping registration");
-    return;
-  }
-  if (!addPeer(mac)) {
-    Serial.print("Failed to add fouling node ");
-    Serial.print(macToString(mac));
-    Serial.println(" as ESP-NOW peer");
-    return;
+// Reports a registration attempt upstream. Rate-limited per MAC: a node
+// re-announces every 10s forever, and the Pi needs first sighting, any status
+// change, and coarse liveness -- not every beat. A status CHANGE always goes
+// out immediately, since that's the event an operator is waiting on.
+void reportNodeSeen(const uint8_t *mac, uint8_t nodeType, NodeSeenStatus status) {
+  unsigned long now = millis();
+
+  // Keyed by MAC in its own table rather than piggybacking on peers[],
+  // because the MACs that most need rate-limiting are exactly the REJECTED
+  // ones -- a neighbouring pair's misflashed node re-announces every 10s and
+  // never earns a peers[] slot, so anything indexed off that table would
+  // report it forever.
+  int slot = -1, free = -1, oldest = 0;
+  for (int i = 0; i < SEEN_REPORT_SLOTS; i++) {
+    if (seenReports[i].used && memcmp(seenReports[i].mac, mac, 6) == 0) { slot = i; break; }
+    if (!seenReports[i].used && free < 0) free = i;
+    if (seenReports[i].at < seenReports[oldest].at) oldest = i;
   }
 
-  memcpy(registeredLaneNodes[registeredLaneNodeCount], mac, 6);
-  registeredLaneNodeCount++;
-  Serial.print("Registered FOULING node ");
-  Serial.println(macToString(mac));
-}
-
-bool isSpeedNodeRegistered(const uint8_t *mac) {
-  for (int i = 0; i < registeredSpeedNodeCount; i++) {
-    if (memcmp(registeredSpeedNodes[i], mac, 6) == 0) {
-      return true;
+  if (slot >= 0) {
+    if (seenReports[slot].status == status &&
+        (now - seenReports[slot].at) < NODE_SEEN_REFRESH_MS) {
+      return;   // same status, reported recently -- stay quiet
     }
+  } else {
+    slot = (free >= 0) ? free : oldest;
+    memcpy(seenReports[slot].mac, mac, 6);
+    seenReports[slot].used = true;
   }
-  return false;
+  seenReports[slot].status = status;
+  seenReports[slot].at = now;
+
+  UartNodeSeenPayload p;
+  memcpy(p.mac, mac, 6);
+  p.nodeType = nodeType;
+  p.status = status;
+  p.timestampMs = now;
+  sendToPi(UART_NODE_SEEN, (const uint8_t *)&p, sizeof(p));
 }
 
-void registerSpeedNode(const uint8_t *mac) {
-  if (isSpeedNodeRegistered(mac)) return;
-  if (registeredSpeedNodeCount >= MAX_LANE_NODES) {
-    Serial.println("Speed node table full, dropping registration");
-    return;
-  }
-  if (!addPeer(mac)) {
-    Serial.print("Failed to add speed node ");
-    Serial.print(macToString(mac));
-    Serial.println(" as ESP-NOW peer");
-    return;
-  }
-
-  memcpy(registeredSpeedNodes[registeredSpeedNodeCount], mac, 6);
-  registeredSpeedNodeCount++;
-  Serial.print("Registered SPEED node ");
-  Serial.println(macToString(mac));
+void sendPeerTableAck() {
+  UartPeerTableAckPayload p;
+  p.generation = allowlistGeneration;
+  p.count = allowlistCount;
+  sendToPi(UART_PEER_TABLE_ACK, (const uint8_t *)&p, sizeof(p));
 }
 
-bool isBallDetectNodeRegistered(const uint8_t *mac) {
-  for (int i = 0; i < registeredBallDetectNodeCount; i++) {
-    if (memcmp(registeredBallDetectNodes[i], mac, 6) == 0) {
-      return true;
+void handleRegister(const uint8_t *mac, uint8_t nodeType) {
+  NodeSeenStatus status = judgeRegistration(mac, nodeType);
+
+  // Log only on a state change -- a re-announce from a node we already know
+  // is a no-op liveness beat and shouldn't spam the console every 10s.
+  bool known = findPeerSlot(peers, mac) >= 0;
+
+  if (status == NODE_ACCEPTED || status == NODE_UNGOVERNED) {
+    if (!known) {
+      Serial.print("[");
+      Serial.print(millis());
+      Serial.print(" ms] RECV from ");
+      Serial.print(macToString(mac));
+      Serial.print(" MSG_REGISTER { nodeType=");
+      Serial.print(nodeTypeName(nodeType));
+      Serial.print(" }");
+      Serial.println(status == NODE_UNGOVERNED ? "  (ungoverned -- no allowlist yet)" : "");
+      registerPeer(mac, nodeType);
     }
-  }
-  return false;
-}
-
-void registerBallDetectNode(const uint8_t *mac) {
-  if (isBallDetectNodeRegistered(mac)) return;
-  if (registeredBallDetectNodeCount >= MAX_LANE_NODES) {
-    Serial.println("Ball detect node table full, dropping registration");
-    return;
-  }
-  if (!addPeer(mac)) {
-    Serial.print("Failed to add ball detect node ");
+  } else if (!known) {
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] REFUSED registration from ");
     Serial.print(macToString(mac));
-    Serial.println(" as ESP-NOW peer");
+    Serial.print(" as ");
+    Serial.print(nodeTypeName(nodeType));
+    Serial.println(status == NODE_REJECTED_WRONG_TYPE
+                     ? " -- listed with a different nodeType"
+                     : " -- not on this gateway's allowlist");
+  }
+
+  reportNodeSeen(mac, nodeType, status);
+}
+
+// Applies a whole allowlist from the Pi. Arriving as ONE frame is what makes
+// this atomic: there is no way to half-apply a table and lock out the lane's
+// real nodes partway through.
+void applyPeerTable(const uint8_t *payload, uint8_t len) {
+  if (len < 3) return;
+  uint16_t generation = (uint16_t)(payload[0] | (payload[1] << 8));
+  uint8_t count = payload[2];
+  if (count > MAX_PEERS) {
+    Serial.print("Peer table from Pi has too many entries (");
+    Serial.print(count);
+    Serial.println("), ignoring");
+    return;
+  }
+  if (len != (uint8_t)(3 + count * 7)) {
+    Serial.println("Peer table length mismatch, ignoring");
     return;
   }
 
-  memcpy(registeredBallDetectNodes[registeredBallDetectNodeCount], mac, 6);
-  registeredBallDetectNodeCount++;
-  Serial.print("Registered BALL DETECT node ");
-  Serial.println(macToString(mac));
-}
-
-void registerPinsetterNode(const uint8_t *mac) {
-  if (pinsetterRegistered && memcmp(pinsetterMac, mac, 6) == 0) return;
-  if (!addPeer(mac)) {
-    Serial.print("Failed to add pinsetter node ");
-    Serial.print(macToString(mac));
-    Serial.println(" as ESP-NOW peer");
-    return;
+  memset(allowlist, 0, sizeof(allowlist));
+  for (int i = 0; i < count; i++) {
+    const uint8_t *e = payload + 3 + i * 7;
+    memcpy(allowlist[i].mac, e, 6);
+    allowlist[i].nodeType = e[6];
+    allowlist[i].used = true;
   }
+  allowlistCount = count;
+  allowlistGeneration = generation;
+  allowlistValid = true;
+  persistAllowlist();
 
-  memcpy(pinsetterMac, mac, 6);
-  pinsetterRegistered = true;
-  Serial.print("Registered PINSETTER node ");
-  Serial.println(macToString(mac));
+  Serial.print("[");
+  Serial.print(millis());
+  Serial.print(" ms] Peer allowlist updated from Pi: generation ");
+  Serial.print(generation);
+  Serial.print(", ");
+  Serial.print(count);
+  Serial.println(" entries");
+
+  reconcilePeersAgainstAllowlist();
+  sendPeerTableAck();
 }
 
-void handleRegister(const uint8_t *mac, const NodeMessage &msg) {
-  switch (msg.code) {
-    case NODE_FOULING:   registerLaneNode(mac); break;
-    case NODE_PINSETTER: registerPinsetterNode(mac); break;
-    case NODE_SPEED:     registerSpeedNode(mac); break;
-    case NODE_BALL_DETECT: registerBallDetectNode(mac); break;
-    case NODE_SCORING:
-      // Vestigial -- scoring lives on the Pi over UART now, not as an
-      // ESP-NOW node. No command path exists for this nodeType.
-      Serial.print("Scoring node registered (vestigial, no command path): ");
-      Serial.println(macToString(mac));
-      break;
-    default:
-      Serial.print("REGISTER with unknown nodeType ");
-      Serial.println(msg.code);
-      break;
-  }
-}
 
 // ---- Downstream sends ----
 // MSG_COMMAND and MSG_ACK go out on BOTH ESP-NOW and RS485, unconditionally,
@@ -389,12 +605,14 @@ void sendPinsetterCommand(CommandCode command, LaneSide side, uint8_t cycleCount
   }
   Serial.println(" }");
 
-  if (pinsetterRegistered) {
-    esp_now_send(pinsetterMac, (uint8_t *)&msg, sizeof(msg));
+  uint8_t mac[6];
+  bool haveEspNow = pinsetterMac(mac);
+  if (haveEspNow) {
+    esp_now_send(mac, (uint8_t *)&msg, sizeof(msg));
   }
   rs485.enqueue(msg);   // no-op if RS485_ENABLED is false
 
-  if (!pinsetterRegistered && !rs485.enabled()) {
+  if (!haveEspNow && !rs485.enabled()) {
     Serial.println("No transport available for pinsetter command (not ESP-NOW registered, RS485 disabled)");
   }
 }
@@ -407,8 +625,9 @@ void sendStatusAck(uint8_t seq) {
   ack.laneSide = LaneSide::NONE;   // acks are node-level
   ack.timestampMs = millis();
 
-  if (pinsetterRegistered) {
-    esp_now_send(pinsetterMac, (uint8_t *)&ack, sizeof(ack));
+  uint8_t mac[6];
+  if (pinsetterMac(mac)) {
+    esp_now_send(mac, (uint8_t *)&ack, sizeof(ack));
   }
   rs485.enqueue(ack);
 }
@@ -523,7 +742,9 @@ uint8_t frameChecksum(uint8_t len, const uint8_t *payload) {
 }
 
 void sendToPi(UartMsgType msgType, const uint8_t *data, uint8_t dataLen) {
-  uint8_t payload[32];
+  // 64, not 32: a full 8-entry peer table is 3 + 8*7 = 59 payload bytes, and
+  // sending the allowlist as ONE frame is what makes applying it atomic.
+  uint8_t payload[64];
   if (dataLen + 1 > (uint8_t)sizeof(payload)) {
     Serial.println("Pi UART payload too large, dropping");
     return;
@@ -647,6 +868,10 @@ void handlePiMessage(uint8_t msgType, const uint8_t *payload, uint8_t len) {
       broadcastScoreEvent((LaneSide)ev.laneSide, ev.ballNumber, ev.pinfallMask, ev.timestampMs);
       break;
     }
+    case UART_PEER_TABLE: {
+      applyPeerTable(payload, len);
+      break;
+    }
     default:
       Serial.print("Unknown UART message type from Pi: 0x");
       Serial.println(msgType, HEX);
@@ -678,7 +903,7 @@ void handlePiMessage(uint8_t msgType, const uint8_t *payload, uint8_t len) {
 // on the first byte of each new "message" instead: 0xAA means a binary
 // frame, anything else is bench-console text.
 void pollPiLink() {
-  static uint8_t buf[33];   // 1 (msgType) + up to 32 payload bytes
+  static uint8_t buf[65];   // 1 (msgType) + up to 64 payload bytes -- see sendToPi
   static uint8_t bufLen = 0;
   static uint8_t expectedLen = 0;
   static bool haveLen = false;
@@ -765,25 +990,27 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
   // shared handler. It also deliberately skips the dual-send dedupe: it's
   // never dual-sent, and it repeats every 10s by design.
   if (msg.msgType == MSG_REGISTER) {
-    // Nodes re-announce every 10s so a gateway reboot re-learns them.
-    // Silently ignore re-registrations from nodes we already know.
-    bool alreadyKnown =
-      (msg.code == NODE_FOULING && isLaneNodeRegistered(info->src_addr)) ||
-      (msg.code == NODE_SPEED && isSpeedNodeRegistered(info->src_addr)) ||
-      (msg.code == NODE_BALL_DETECT && isBallDetectNodeRegistered(info->src_addr)) ||
-      (msg.code == NODE_PINSETTER && pinsetterRegistered &&
-       memcmp(pinsetterMac, info->src_addr, 6) == 0);
-    if (alreadyKnown) return;
+    handleRegister(info->src_addr, msg.code);
+    return;
+  }
 
+  // Enforcement has to happen HERE, not only at registration: ESP-NOW's
+  // receive callback fires for any unicast addressed to this board whether or
+  // not the sender is in our peer table, so a node that was accepted once and
+  // later denied would otherwise keep delivering events forever. Checking
+  // every inbound frame is what makes a deny actually take effect.
+  //
+  // Note there is no equivalent check on the RS485 path: those frames carry
+  // no sender address at all, so there is nothing to check. That transport is
+  // trusted because each lane pair has its own physically isolated bus
+  // segment -- see the peer registry comment near the top of this file.
+  if (!isAllowedPeer(info->src_addr)) {
     Serial.print("[");
     Serial.print(millis());
-    Serial.print(" ms] RECV from ");
-    Serial.print(macToString(info->src_addr));
-    Serial.print(" MSG_REGISTER { nodeType=");
-    Serial.print(nodeTypeName(msg.code));
-    Serial.println(" }");
-
-    handleRegister(info->src_addr, msg);
+    Serial.print(" ms] DROPPED ");
+    Serial.print(msgTypeName(msg.msgType));
+    Serial.print(" from unlisted ");
+    Serial.println(macToString(info->src_addr));
     return;
   }
 
@@ -793,23 +1020,30 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 // ---- Serial bench-test console ----
 void printStatus() {
   Serial.println("---- gateway status ----");
-  Serial.print("Fouling nodes registered: ");
-  Serial.println(registeredLaneNodeCount);
-  for (int i = 0; i < registeredLaneNodeCount; i++) {
-    Serial.print("  "); Serial.println(macToString(registeredLaneNodes[i]));
+  Serial.print("Peer allowlist: ");
+  if (!allowlistValid) {
+    Serial.println("NONE -- UNGOVERNED, any node that registers is accepted");
+  } else {
+    Serial.print("generation ");
+    Serial.print(allowlistGeneration);
+    Serial.print(", ");
+    Serial.print(allowlistCount);
+    Serial.println(" entries");
+    for (int i = 0; i < MAX_PEERS; i++) {
+      if (!allowlist[i].used) continue;
+      Serial.print("    "); Serial.print(macToString(allowlist[i].mac));
+      Serial.print("  "); Serial.println(nodeTypeName(allowlist[i].nodeType));
+    }
   }
-  Serial.print("Speed nodes registered: ");
-  Serial.println(registeredSpeedNodeCount);
-  for (int i = 0; i < registeredSpeedNodeCount; i++) {
-    Serial.print("  "); Serial.println(macToString(registeredSpeedNodes[i]));
+  Serial.println("Registered nodes:");
+  int registered = 0;
+  for (int i = 0; i < MAX_PEERS; i++) {
+    if (!peers[i].used) continue;
+    registered++;
+    Serial.print("    "); Serial.print(macToString(peers[i].mac));
+    Serial.print("  "); Serial.println(nodeTypeName(peers[i].nodeType));
   }
-  Serial.print("Ball detect nodes registered: ");
-  Serial.println(registeredBallDetectNodeCount);
-  for (int i = 0; i < registeredBallDetectNodeCount; i++) {
-    Serial.print("  "); Serial.println(macToString(registeredBallDetectNodes[i]));
-  }
-  Serial.print("Pinsetter node: ");
-  Serial.println(pinsetterRegistered ? macToString(pinsetterMac) : "not registered");
+  if (registered == 0) Serial.println("    (none yet)");
   Serial.println("(machine config lives on the pinsetter node -- use pstatus)");
   Serial.println("(this gateway addresses sides A/B only -- it has no lane numbers)");
   Serial.println("------------------------");
@@ -918,6 +1152,10 @@ void setup() {
   randomSeed(esp_random());
   rs485.begin(RS485_BAUD, RS485_RX_PIN, RS485_TX_PIN);
   if (rs485.enabled()) Serial.println("RS485 fallback link up");
+
+  // Before the radio: a gateway booting with the Pi down must still enforce
+  // the last allowlist it was given rather than reverting to open.
+  loadAllowlist();
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // modem sleep makes ESP-NOW receivers miss packets

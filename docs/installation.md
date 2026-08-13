@@ -85,6 +85,12 @@ Two things worth knowing before you wire anything up:
   gateway's UART2 pins for the Pi link (RX=16/TX=17) and the speed and ball
   detection nodes' sensor and RS485 pins. Confirm them against your actual
   boards — `firmware/HANDOFF.md` flags each unverified one.
+- **Give each lane pair its own isolated RS485 segment.** Do not run one bus
+  across pairs. RS485 frames carry no sender or receiver address at all, so a
+  shared run means a gateway ingests the neighbouring pair's fouls and beam
+  breaks as its own, and nothing in software can detect it — the ESP-NOW
+  allowlist (section 2c) cannot help, because there is no MAC on those frames
+  to check. This is a requirement, not a preference.
 - **Wire RS485 RX on every node, including the sensor-only ones.** The
   fouling, speed, and ball detection nodes act on nothing they receive, but
   they read the bus to know when it's busy — that's what stops them
@@ -180,7 +186,39 @@ The bridge starts and serves `/health` with no gateway attached, and
 `state_machine` treats it as unreachable-but-non-fatal if it's down —
 mesh commands 503 until it's back, everything else still works.
 
-### 2c. State machine / REST API
+### 2c. Tell the gateway which nodes are yours
+
+The gateway starts **ungoverned**: it accepts any node that registers, which
+is what lets a fresh install come up unattended. That is also the hole — a
+board flashed with the wrong `GATEWAY_MAC` registers with a neighbouring pair
+and is accepted silently, and because every leaf sketch is identical across
+pairs its events look exactly like the real node's.
+
+Once the mesh is up, lock it down. With the bridge running:
+
+```bash
+curl localhost:8100/peers/pending      # every node that has tried to register
+```
+
+Each entry is either one of your nodes or a neighbour's. **Nothing in software
+can tell them apart** — check the MACs against the boards you actually flashed
+(`mac_finder` prints each one) rather than allowing whatever appears:
+
+```bash
+curl -X POST localhost:8100/peers/68:25:DD:32:64:7C/allow -H 'Content-Type: application/json' -d '{}'
+```
+
+The first `allow` ends ungoverned mode: from then on, unlisted MACs are
+refused and refusals show up in `/peers` with a reason. The Pi keeps the list
+(`UART_BRIDGE_PEERS_FILE`, default `peers.json`) and re-pushes it whenever the
+serial link reconnects; the gateway also caches it in NVS, so it keeps
+enforcing while the Pi is down. `GET /health` reports `peers.inSync` — false
+means an edit hasn't reached the gateway yet.
+
+You can pre-provision a node before powering it on by passing its type:
+`-d '{"node_type": 0}'` (0 fouling, 1 pinsetter, 3 speed, 4 ball detect).
+
+### 2d. State machine / REST API
 
 The actual game-state service — bowler rosters, scoring, turn order,
 pinsetter commands:
@@ -196,7 +234,7 @@ API docs at `/docs` once it's running. See
 [its README](https://github.com/nicholas-a-hall/openlanelink/blob/main/software/lanecompute/backend/state_machine/README.md)
 for the full endpoint list.
 
-### 2d. Vision (camera pin detection)
+### 2e. Vision (camera pin detection)
 
 A separate, un-Dockerized daemon with direct camera access — see
 [`vision/README.md`](https://github.com/nicholas-a-hall/openlanelink/blob/main/software/lanecompute/backend/vision/README.md)
@@ -265,7 +303,7 @@ stays available for manual and bench triggering. Note what vision does
 across captures at all — `state_machine` is what diffs that against what
 it already knew was standing to derive the per-ball count.
 
-### 2e. Verify the pair is live
+### 2f. Verify the pair is live
 
 Health first:
 ```bash
@@ -297,7 +335,7 @@ The last call's `bowlers[0].frames[0]` should show a recorded ball with a
 pinfall report alone is enough to drive the game forward (see the main
 page's API surface section).
 
-### 2f. Bowler/overhead UI
+### 2g. Bowler/overhead UI
 
 ```bash
 cd software/lanecompute/frontend/ui

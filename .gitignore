@@ -25,3 +25,8 @@ Thumbs.db
 # Env / secrets
 .env
 .env.local
+
+# Per-installation runtime state, not source: which node MACs an operator has
+# allowed onto this gateway's mesh (uart_bridge/peer_registry.py). Committing
+# one house's MACs would push them onto every other install.
+peers.json

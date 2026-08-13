@@ -30,9 +30,12 @@ FRAME_START = 0xAA
 UART_LANE_EVENT = 0x01
 UART_BEAM_EVENT = 0x02
 UART_PINSETTER_STATUS = 0x03  # forwards a pinsetter MSG_STATUS verbatim (any StatusCode)
+UART_NODE_SEEN = 0x04  # a node tried to register -- see peer_registry.py
+UART_PEER_TABLE_ACK = 0x05  # which allowlist generation is actually live on the gateway
 # Pi -> Gateway
 UART_PINSETTER_COMMAND = 0x10  # any CommandCode -- generalized from the old cycle-only message
 UART_SCORE_EVENT = 0x11
+UART_PEER_TABLE = 0x12  # the authoritative allowlist, whole table in one frame
 
 EVENT_CLEAR = 0
 EVENT_FOUL = 1
@@ -97,6 +100,9 @@ _BEAM_EVENT_FMT = "<BBBxI"       # eventType, laneSide, beamRole, pad, timestamp
 _STATUS_EVENT_FMT = "<BBBxI"     # statusCode, laneSide, ballNumber, pad, timestampMs (8 bytes)
 _PINSETTER_COMMAND_FMT = "<BBB"  # command, laneSide, cycleCount (3 bytes, no padding)
 _SCORE_EVENT_FMT = "<BBHI"       # laneSide, ballNumber, pinfallMask, timestampMs (8 bytes)
+_NODE_SEEN_FMT = "<6sBBI"        # mac, nodeType, status, timestampMs (12 bytes, no pad needed)
+_PEER_TABLE_ACK_FMT = "<HB"      # generation, count (3 bytes)
+_PEER_ENTRY_FMT = "<6sB"         # mac, nodeType (7 bytes)
 
 LANE_EVENT_SIZE = struct.calcsize(_LANE_EVENT_FMT)
 BEAM_EVENT_SIZE = struct.calcsize(_BEAM_EVENT_FMT)
@@ -144,6 +150,54 @@ class StatusEvent:
     def decode(cls, payload: bytes) -> "StatusEvent":
         status_code, lane_side, ball_number, ts = struct.unpack(_STATUS_EVENT_FMT, payload)
         return cls(status_code, lane_side, ts, ball_number or None)
+
+
+@dataclass
+class NodeSeenEvent:
+    """A node tried to register with the gateway. Reported whether it was
+    accepted or refused -- a node silently turned away is exactly the symptom
+    that's impossible to diagnose from the lane itself."""
+
+    mac: str          # "AA:BB:CC:DD:EE:FF"
+    node_type: int    # NodeType
+    status: int       # peer_registry.NODE_* -- accepted / ungoverned / rejected_*
+    timestamp_ms: int
+
+    @classmethod
+    def decode(cls, payload: bytes) -> "NodeSeenEvent":
+        raw_mac, node_type, status, ts = struct.unpack(_NODE_SEEN_FMT, payload)
+        return cls(":".join(f"{b:02X}" for b in raw_mac), node_type, status, ts)
+
+
+@dataclass
+class PeerTableAck:
+    """The gateway confirming which allowlist generation it actually applied.
+    Divergence from ours means a push didn't land."""
+
+    generation: int
+    count: int
+
+    @classmethod
+    def decode(cls, payload: bytes) -> "PeerTableAck":
+        generation, count = struct.unpack(_PEER_TABLE_ACK_FMT, payload)
+        return cls(generation, count)
+
+
+def encode_peer_table(generation: int, entries) -> bytes:
+    """The WHOLE allowlist in one frame -- that is what makes the gateway
+    apply it atomically, with no staging/commit protocol and no way to
+    half-apply a table and lock out the lane's real nodes.
+
+    `entries` is an iterable of (mac_string, node_type). 8 entries is 59 bytes,
+    inside the gateway's 64-byte UART payload buffer; more than that would
+    silently truncate, so callers cap at peer_registry.MAX_PEERS.
+    """
+    entries = list(entries)
+    body = b"".join(
+        struct.pack(_PEER_ENTRY_FMT, bytes.fromhex(mac.replace(":", "")), node_type)
+        for mac, node_type in entries
+    )
+    return struct.pack("<HB", generation & 0xFFFF, len(entries)) + body
 
 
 def encode_pinsetter_command(command: int, lane_side: int, cycle_count: int = 1) -> bytes:

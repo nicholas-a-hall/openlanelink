@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 import lane_map
+import peer_registry
 import protocol as p
 
 log = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ _loop: asyncio.AbstractEventLoop | None = None
 _ws_clients: set[WebSocket] = set()
 
 link = None  # SerialLink, set via set_link() by main.py before the app starts
+registry = peer_registry.PeerRegistry()
 
 
 def set_link(serial_link) -> None:
@@ -119,6 +121,40 @@ def on_status_event(ev) -> None:
     _broadcast({"type": "statusEvent", "statusCode": ev.status_code, "laneNumber": lane or 0, "ballNumber": ev.ball_number, "timestampMs": ev.timestamp_ms})
 
 
+# ---- peer registry callbacks (also on the read thread) ----
+def on_node_seen(ev) -> None:
+    """A node tried to register with the gateway. Recorded whether it was
+    accepted or refused -- the refusals are the point, since a node silently
+    turned away is otherwise invisible from the lane."""
+    changed = registry.record_sighting(ev.mac, ev.node_type, ev.status, ev.timestamp_ms)
+    if changed:
+        _broadcast({
+            "type": "nodeSeen",
+            "mac": ev.mac,
+            "nodeType": ev.node_type,
+            "nodeTypeName": peer_registry.NODE_TYPE_NAMES.get(ev.node_type, "unknown"),
+            "status": ev.status,
+            "statusName": peer_registry.STATUS_NAMES.get(ev.status, "unknown"),
+            "timestampMs": ev.timestamp_ms,
+        })
+
+
+def on_peer_table_ack(ack) -> None:
+    registry.record_gateway_ack(ack.generation, ack.count)
+
+
+def push_peer_table(target=None) -> bool:
+    """Send the allowlist to the gateway. Used both after an operator change
+    and on every serial (re)connect, so a gateway that rebooted while we
+    weren't attached converges without needing a handshake."""
+    target = target or link
+    if target is None or not target.connected:
+        log.warning("cannot push peer table -- gateway link is down; it will be re-pushed on reconnect")
+        return False
+    target.send_peer_table(registry.generation, registry.allowed())
+    return True
+
+
 # ---- health ----
 @app.get("/health")
 async def health():
@@ -145,6 +181,16 @@ async def health():
         "uartConnected": connected,
         "stale": stale,
         "laneSides": lane_map.describe(),
+        "peers": {
+            "allowed": len(registry.allowed()),
+            "pending": len(registry.pending()),
+            "generation": registry.generation,
+            "gatewayGeneration": registry.gateway_generation,
+            # False means an allowlist edit hasn't reached the gateway. The
+            # symptom otherwise is a node still being refused after an
+            # operator allowed it, with nothing to explain why.
+            "inSync": registry.gateway_generation == registry.generation,
+        },
         "port": link.port if link else None,
         "baud": link.baud if link else None,
         "lastFrameAgoS": None if last is None else round(now - last, 1),
@@ -267,3 +313,115 @@ async def debug_beam_event(body: DebugBeamEventBody):
     log.info("injecting synthetic BeamEvent: %s (lane %s -> side %s)", ev, body.lane_number, side)
     on_beam_event(ev)
     return {"ok": True, "injected": {"eventType": ev.event_type, "laneNumber": body.lane_number, "laneSide": side, "beamRole": ev.beam_role, "timestampMs": ev.timestamp_ms}}
+
+
+# ---- peer registry: who is allowed on this gateway's mesh ----
+# The Pi owns the allowlist; the gateway caches and enforces it. See
+# peer_registry.py for why the authority sits here rather than on the gateway.
+
+
+@app.get("/peers")
+async def list_peers():
+    """Every MAC this gateway has ever reported, allowed or not, plus whether
+    our allowlist generation matches what the gateway says it applied."""
+    return registry.snapshot()
+
+
+@app.get("/peers/pending")
+async def list_pending_peers():
+    """Seen on the mesh but not allowed -- the operator's work queue.
+
+    A MAC lands here for one of two reasons and they look identical from the
+    Pi: it's a node of this pair that hasn't been provisioned yet, or it's a
+    neighbouring pair's node that was flashed with this gateway's MAC. Nothing
+    in software can tell those apart, which is exactly why allowing is a
+    human decision rather than something auto-accepted on first sighting."""
+    return {"pending": registry.pending()}
+
+
+class PeerAllowBody(BaseModel):
+    # Only needed for a MAC that has never been seen (pre-provisioning a node
+    # before it is powered on). For anything in /peers/pending the type is
+    # already known from its registration attempt.
+    node_type: int | None = None
+
+
+@app.post("/peers/{mac}/allow")
+async def allow_peer(mac: str, body: PeerAllowBody = PeerAllowBody()):
+    try:
+        normalized = peer_registry.format_mac(peer_registry.parse_mac(mac))
+        entry = registry.allow(normalized, body.node_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{mac} has never been seen -- pass node_type to pre-provision it",
+        )
+    pushed = push_peer_table()
+    return {"ok": True, "mac": normalized, "entry": entry,
+            "generation": registry.generation, "pushed": pushed}
+
+
+@app.post("/peers/{mac}/deny")
+async def deny_peer(mac: str):
+    """Revokes a MAC. The gateway drops it as an ESP-NOW peer AND starts
+    ignoring its inbound frames, so this takes effect without waiting for the
+    node to reboot."""
+    try:
+        normalized = peer_registry.format_mac(peer_registry.parse_mac(mac))
+        entry = registry.deny(normalized)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no peer {mac}")
+    pushed = push_peer_table()
+    return {"ok": True, "mac": normalized, "entry": entry,
+            "generation": registry.generation, "pushed": pushed}
+
+
+@app.delete("/peers/{mac}")
+async def forget_peer(mac: str):
+    """Drops a MAC from the registry entirely. Only meaningful for a node
+    that is gone for good -- one that's still powered on simply reappears on
+    its next 10s re-announce."""
+    try:
+        normalized = peer_registry.format_mac(peer_registry.parse_mac(mac))
+        registry.forget(normalized)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no peer {mac}")
+    pushed = push_peer_table()
+    return {"ok": True, "generation": registry.generation, "pushed": pushed}
+
+
+@app.post("/peers/push")
+async def push_peers():
+    """Force a re-push of the allowlist. Normally unnecessary -- it happens on
+    every change and every reconnect -- but useful when /health reports
+    inSync=false."""
+    if not push_peer_table():
+        raise HTTPException(status_code=503, detail="UART bridge not connected to gateway")
+    return {"ok": True, "generation": registry.generation}
+
+
+class DebugNodeSeenBody(BaseModel):
+    mac: str
+    node_type: int = 0
+    status: int = peer_registry.NODE_UNGOVERNED
+
+
+@app.post("/debug/node-seen")
+async def debug_node_seen(body: DebugNodeSeenBody):
+    """Bench/dev only: inject a synthetic registration sighting exactly as a
+    real UART_NODE_SEEN frame would produce, with no hardware attached --
+    mirrors /debug/beam-event. Touches nothing on the serial link."""
+    try:
+        normalized = peer_registry.format_mac(peer_registry.parse_mac(body.mac))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    ev = p.NodeSeenEvent(normalized, body.node_type, body.status, int(time.monotonic() * 1000) % (2 ** 32))
+    log.info("injecting synthetic NodeSeenEvent: %s", ev)
+    on_node_seen(ev)
+    return {"ok": True, "injected": {"mac": ev.mac, "nodeType": ev.node_type, "status": ev.status}}

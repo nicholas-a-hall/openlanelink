@@ -106,6 +106,10 @@ Nodes provision once, then rejoin silently on every boot after that — identity
 
 The peer registry itself lives upstream (`MAC address → { lane_id, node_role, provisioned, last_seen }`). The gateway holds a local copy of its own lane-pair's slice; edge nodes only know their own identity and the gateway's MAC.
 
+**Built so far:** the upstream registry and the gateway's cached copy of it. The compute node owns an allowlist of `{MAC, nodeType}`, pushes it to the gateway over the UART link, and the gateway caches it in NVS and enforces it on every inbound ESP-NOW frame — reporting every registration attempt, accepted or refused, back upstream. Until an allowlist is first pushed the gateway stays *ungoverned* and accepts anyone, so a fresh install still comes up unattended. Enforcement is ESP-NOW-only; RS485 frames carry no sender address and that bus is trusted because each pair has its own isolated segment.
+
+**Not built yet:** edge nodes have no NVS identity — `GATEWAY_MAC` is still compile-time, so there is no provisioning handshake pushing identity *down* to a node, no `provisioned` flag, and no corrupted-NVS recovery path. The gateway failure mode below is also still a design, not code.
+
 ## Mesh protocol: gateway failure mode
 
 The gateway is a plain ESP32 with no redundancy of its own, and it's the single point every edge node depends on for command-and-control — so a dead gateway needs a recovery path that doesn't require touching every node by hand.

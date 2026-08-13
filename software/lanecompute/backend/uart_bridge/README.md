@@ -40,6 +40,13 @@ background, and `/commands/*` just 503 until it connects.
 | `POST` | `/commands/cycle` | `{lane_number, cycle_count?}` (default 1) |
 | `POST` | `/commands/rerack` | `{lane_number, cycle_count?}` (default 2 -- the safe "sweep + spot fresh" fallback; callers with real ball-state should pass an explicit count) |
 | `POST` | `/commands/score-event` | `{lane_number, ball_number, pinfall_mask, timestamp_ms}` |
+| `GET` | `/peers` | every MAC the gateway has reported, allowed or not, plus whether our allowlist generation matches what the gateway applied |
+| `GET` | `/peers/pending` | seen on the mesh but not allowed — the operator's work queue |
+| `POST` | `/peers/{mac}/allow` | allow a MAC; `{node_type}` only needed to pre-provision one that hasn't been seen yet |
+| `POST` | `/peers/{mac}/deny` | revoke; the gateway drops it as a peer *and* starts ignoring its frames, without waiting for a reboot |
+| `DELETE` | `/peers/{mac}` | forget entirely (a node still powered on simply reappears on its next re-announce) |
+| `POST` | `/peers/push` | force a re-push; normally unnecessary, useful when `/health` reports `inSync: false` |
+| `POST` | `/debug/node-seen` | bench only: inject a synthetic registration sighting, no hardware |
 
 Interactive docs at `/docs` once running.
 
@@ -89,7 +96,7 @@ far -- `serial_link.SerialLink` pointed at a nonexistent placeholder port
 for the state_machine integration test, and (next) a real gateway ESP32
 over a Windows COM port via USB. None of the following has been verified
 on an actual Raspberry Pi yet:
-- **Serial device path.** `UART_BRIDGE_PORT` defaults to `/dev/serial0`
+- **Serial device path.** `UART_BRIDGE_PEERS_FILE` (default `peers.json`, where the peer allowlist is persisted), `UART_BRIDGE_PORT` defaults to `/dev/serial0`
   (the Pi's GPIO UART header, per `firmware/HANDOFF.md`), but if the
   gateway ends up wired to the Pi over USB instead (as it currently is on
   the dev machine) the real path is a `/dev/ttyUSB*`/`/dev/ttyACM*`

@@ -139,7 +139,7 @@ The hub. Not itself discovered by anything (every other node hardcodes its MAC).
 | **Emits (to pinsetter, dual-sent ESP-NOW + RS485)** | Bench-console-triggered: `CMD_CYCLE`, `CMD_RERACK`, `CMD_RESPOT`, `CMD_POWER_ON/OFF`, `CMD_STATUS`. `UART_PINSETTER_COMMAND` from the Pi passes through any `CommandCode` the same way (generalized 2026-07-18 from a cycle-only message, so the Pi's REST API can also issue re-rack, not just cycle) — this is now also how a `LANE_FOUL`'s rerack reaches the pinsetter, via the Pi rather than a local gateway decision (see below). Every `CMD_CYCLE`/`CMD_RERACK` now also carries `data[0]=cycleCount` (2026-08-07) — the bench console picks a literal default (1 for cycle, 2 for rerack, no ball state to consult); `UART_PINSETTER_COMMAND` from the Pi passes through whatever count the Pi computed. ESP-NOW send is gated on the pinsetter being registered; RS485 send is gated only on the hardware being present (`RS485_ENABLED`) — so RS485 keeps working even if ESP-NOW registration never completed. |
 | **Emits (broadcast, both transports)** | `MSG_SCORE_EVENT{laneSide, code=ballNumber, data[0..1]=pinfallMask}` — only when the Pi sends `UART_SCORE_EVENT`. Sent to ESP-NOW's `FF:FF:FF:FF:FF:FF` (the one message type that isn't per-peer unicast on ESP-NOW) and enqueued on RS485, which is inherently broadcast on a shared bus — no separate broadcast address needed there. No node currently consumes it; see "Known gaps" below. |
 | **Emits (ack, dual-sent ESP-NOW + RS485)** | `MSG_ACK{code=MSG_STATUS, seq}` back to the pinsetter for each `MSG_STATUS` received, on whichever transport(s) are available — regardless of which transport the status arrived on. |
-| **Accepts (from mesh)** | `MSG_REGISTER` from any node, ESP-NOW only (dispatches by `code`/`NodeType` to the fouling/speed/ball-detect/pinsetter registration tables — this is the one case still handled separately, since it needs a MAC). `MSG_LANE_EVENT` from fouling nodes, `MSG_BEAM_EVENT` from speed **or ball detection** nodes (forwarded verbatim either way — the gateway doesn't branch on `beamRole`, it just passes it through for the Pi to key off), and `MSG_STATUS` from the pinsetter — **all on either ESP-NOW or RS485**, all dispatched through the same shared `handleIncomingNodeMessage()` function, so the response is identical regardless of which wire the message came in on. |
+| **Accepts (from mesh)** | `MSG_REGISTER` from any node, ESP-NOW only — checked against the Pi-owned allowlist and recorded in one shared peer table (see "Peer registry" above); this is the one case still handled separately, since it needs a MAC. `MSG_LANE_EVENT` from fouling nodes, `MSG_BEAM_EVENT` from speed **or ball detection** nodes (forwarded verbatim either way — the gateway doesn't branch on `beamRole`, it just passes it through for the Pi to key off), and `MSG_STATUS` from the pinsetter — **all on either ESP-NOW or RS485**, all dispatched through the same shared `handleIncomingNodeMessage()` function, so the response is identical regardless of which wire the message came in on. |
 | **Accepts (bench console, serial @9600, not ESP-NOW)** | `cycle <a\|b>`, `rerack <a\|b>`, `respot <a\|b>`, `power <a\|b> on\|off`, `pstatus`, `status`. Sides, not lane numbers — this gateway has none. |
 | **Foul handling** | None on the gateway anymore (removed 2026-08-07). `MSG_LANE_EVENT{LANE_FOUL}` is forwarded to the Pi exactly like `LANE_CLEAR`, with no cooldown and no `CMD_RERACK` sent from here. The per-lane debounce (a trip over the foul line produces several edges in quick succession) and the rerack decision both moved to `state_machine/state_machine.py`'s `on_foul()`/`FOUL_COOLDOWN_S` (0.75s), which has real game state to decide with. Bench-console `cycle`/`rerack` are unaffected. |
 | **Heartbeat** | None outbound — the gateway is passive/central, it only reacts. It has no timeout/offline-detection for nodes that stop re-registering (see "One message shape" note above). |
@@ -161,6 +161,22 @@ Not a persistent mesh participant. Flash it, read the board's MAC off
 serial, done. No commands, no events, no heartbeat.
 
 ---
+
+## Peer registry — who is allowed on this mesh
+The gateway no longer accepts any node that registers. The Pi owns an
+allowlist of `{MAC, nodeType}` and pushes it over UART; the gateway caches it
+in NVS and enforces it on every inbound ESP-NOW frame, reporting every
+registration attempt — **accepted or refused** — back up as `UART_NODE_SEEN`.
+
+Until a table has ever been pushed the gateway is **UNGOVERNED** and accepts
+anyone, exactly as before, so a fresh install still comes up unattended.
+Allowing a MAC is a deliberate operator action (`POST /peers/{mac}/allow` on
+the bridge): nothing in software can distinguish "my fouling node" from "the
+neighbouring pair's fouling node that was flashed with my gateway's MAC", so
+that call stays with a human. See `PROTOCOL.md`'s "Peer registry".
+
+Enforcement is ESP-NOW-only — RS485 frames have no sender address, and that
+bus is trusted because each pair has its own isolated segment.
 
 ## Known gaps
 - **No node liveness/timeout detection.** The 10s `MSG_REGISTER` re-announce

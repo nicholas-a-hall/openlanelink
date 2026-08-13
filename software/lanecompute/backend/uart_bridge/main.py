@@ -32,6 +32,13 @@ def main():
         on_lane_event=service.on_lane_event,
         on_beam_event=service.on_beam_event,
         on_status_event=service.on_status_event,
+        on_node_seen=service.on_node_seen,
+        on_peer_table_ack=service.on_peer_table_ack,
+        # Re-push the peer allowlist whenever the port opens: the gateway may
+        # have rebooted, or the allowlist may have been edited, while the link
+        # was down. Takes the freshly-opened link explicitly because
+        # service.link isn't assigned until set_link() below.
+        on_connect=service.push_peer_table,
     )
     service.set_link(link)
     log.info(

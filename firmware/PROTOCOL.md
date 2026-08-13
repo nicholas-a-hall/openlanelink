@@ -444,6 +444,50 @@ padding to 4-byte-align the `uint32_t` — this is why `NodeMessage`'s
 `MachineRecord`'s `cooldownMs` (`uint16_t`) only needs 2-byte alignment,
 which it already has at offset 2, so it has zero padding.
 
+## Peer registry — which nodes belong to a gateway
+Every node hardcodes its `GATEWAY_MAC`, so a **correctly flashed** node can
+only ever reach its own gateway over ESP-NOW unicast. A **misflashed** one
+reaches whichever gateway that MAC names, and the gateway used to accept it
+permanently and silently. Since every leaf sketch is now byte-identical across
+lane pairs (they report `laneSide`, not a lane number), such a node's events
+are indistinguishable from the real node's — generic provisioning traded a
+loud misassignment for a quiet one.
+
+**The Pi owns the allowlist; the gateway caches and enforces it.** The root of
+trust is the UART cable: the Pi is wired to exactly one gateway, which is the
+only unforgeable "this one is mine" signal in the system — every MAC-based
+claim is observable by a sniffer and forgeable.
+
+| | |
+|---|---|
+| `UART_NODE_SEEN` (0x04) | gateway → Pi: `{mac[6], nodeType, status, timestampMs}` (12 bytes). Sent on first sighting, on any status change, and otherwise at most every 30 s per MAC — nodes re-announce every 10 s forever and the Pi only needs liveness. `status` is `UNGOVERNED`/`ACCEPTED`/`REJECTED_NOT_LISTED`/`REJECTED_WRONG_TYPE`. **Refusals are reported too** — a node silently turned away is otherwise impossible to diagnose from the lane. |
+| `UART_PEER_TABLE_ACK` (0x05) | gateway → Pi: `{generation uint16, count}`. Which allowlist the gateway *actually* applied; divergence means a push didn't land. |
+| `UART_PEER_TABLE` (0x12) | Pi → gateway: `{generation uint16, count, count × {mac[6], nodeType}}`. **The whole table in one frame**, which is what makes applying it atomic — there is no staging/commit protocol and no way to half-apply a table and lock out the lane's real nodes. 8 entries is 59 bytes; the gateway's UART payload buffer was raised from 32 to 64 bytes for it. |
+
+**Fail open until provisioned, fail closed after.** A gateway with no allowlist
+in NVS accepts every registration and reports it as `UNGOVERNED` — identical to
+its behavior before the registry existed, so a fresh install still comes up on
+its own and the Pi can watch who appears before locking anything down. Once a
+table has been pushed, unlisted MACs are refused. Failing closed on an empty
+NVS instead would brick a lane on any provisioning-order mistake.
+
+Enforcement happens on **every inbound ESP-NOW frame**, not just at
+registration: ESP-NOW's receive callback fires for any unicast addressed to the
+board regardless of its peer table, so a node accepted once and later denied
+would otherwise keep delivering events forever.
+
+**Scope: ESP-NOW only.** RS485 frames carry no sender address (see "RS485
+framing"), so there is nothing to check them against. That transport is trusted
+because **each lane pair has its own physically isolated RS485 segment** — a
+load-bearing install requirement, not a convention. A bus shared across pairs
+would reintroduce exactly the cross-pair contamination this section exists to
+prevent, and no software here would catch it.
+
+Still unbuilt, from the design in `docs/index.md`: nodes have no NVS identity
+(so `GATEWAY_MAC` remains compile-time), there is no operator provisioning
+handshake pushing identity *down* to a node, and there is no gateway
+replacement/failover flow.
+
 ## Gateway ↔ Pi UART boundary
 The gateway translates between the mesh (ESP-NOW/RS485) and the Pi's UART
 link — it is not a raw pass-through of mesh bytes. The Pi-facing UART
