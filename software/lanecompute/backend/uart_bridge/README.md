@@ -35,7 +35,7 @@ background, and `/commands/*` just 503 until it connects.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/health` | see "Health check contract" below |
-| `WS` | `/events` | read-only broadcast of every inbound `LaneEvent`/`BeamEvent`/`StatusEvent`, JSON-encoded. `statusEvent` includes `ballNumber` (the pinsetter's own reported ball for `laneNumber`, `null` if not applicable/unknown) as of 2026-08-07. |
+| `WS` | `/events` | read-only broadcast of every inbound `LaneEvent`/`BeamEvent`/`StatusEvent`, JSON-encoded. `laneNumber` is a **real lane number**: the mesh reports A/B lane sides and this service resolves them via `lane_map.py` before broadcasting, so consumers never see a side. `statusEvent` includes `ballNumber` (the pinsetter's own reported ball for `laneNumber`, `null` if not applicable/unknown) as of 2026-08-07. |
 | `POST` | `/commands/pinsetter` | `{command, lane_number, cycle_count?}` -- raw `CommandCode` (see `protocol.py`); `cycle_count` (default 1) only matters for `CMD_CYCLE`/`CMD_RERACK` |
 | `POST` | `/commands/cycle` | `{lane_number, cycle_count?}` (default 1) |
 | `POST` | `/commands/rerack` | `{lane_number, cycle_count?}` (default 2 -- the safe "sweep + spot fresh" fallback; callers with real ball-state should pass an explicit count) |

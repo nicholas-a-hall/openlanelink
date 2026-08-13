@@ -135,10 +135,11 @@ class BridgeClient:
         elif msg_type == "beamEvent" and on_beam_event:
             await on_beam_event(p.BeamEvent(msg["eventType"], msg["laneNumber"], msg["beamRole"], msg["timestampMs"]))
         elif msg_type == "statusEvent" and on_status_event:
-            # ballNumber isn't sent by uart_bridge today (see
-            # protocol.py's StatusEvent docstring) -- .get() rather than
-            # [] so this doesn't break once it might be, and correctly
-            # stays None until then.
+            # laneNumber is a real lane: uart_bridge resolved the mesh's A/B
+            # side before publishing (see its lane_map.py), so nothing in
+            # this process ever handles a side. ballNumber stays .get()
+            # rather than [] because it is legitimately absent for
+            # node-level statuses.
             await on_status_event(p.StatusEvent(msg["statusCode"], msg["laneNumber"], msg["timestampMs"], msg.get("ballNumber")))
         else:
             log.warning("unhandled bridge event message: %s", msg)

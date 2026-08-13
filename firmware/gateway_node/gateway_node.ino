@@ -6,14 +6,23 @@
 // a nodeType (in the `code` field) so the gateway knows what it just learned
 // about.
 //
-// Fouling nodes send per-lane MSG_LANE_EVENT (one fouling node can cover
-// several lanes). The gateway does NOT act on a FOUL itself -- it forwards
-// the raw event to the Pi verbatim, same as any other sensor event, and the
-// Pi (state_machine.py's on_foul()) decides whose ball it is and issues the
-// pinsetter rerack itself via UART_PINSETTER_COMMAND. (Earlier version: the
-// gateway auto-reracked directly off its own per-lane cooldown timer,
-// independent of the Pi's actual game state -- removed 2026-08-07, see
-// firmware/HANDOFF.md and state_machine/state_machine.py's FOUL_COOLDOWN_S.)
+// ONE GATEWAY == ONE LANE PAIR == ONE MESH. Everything on this mesh is
+// addressed by which SIDE of the pair it concerns (LaneSide::A /
+// LaneSide::B), never by a lane number -- that's what lets every leaf sketch
+// be identical on every pair in the house. This gateway is lane-agnostic in
+// the strongest sense: it doesn't know, and never learns, which real lanes
+// its pair is. Resolving side -> lane number happens exactly once, in
+// software, on the Pi (uart_bridge/lane_map.py). Nothing here needs
+// per-installation configuration at all.
+//
+// Fouling nodes send per-side MSG_LANE_EVENT. The gateway does NOT act on a
+// FOUL itself -- it forwards the raw event to the Pi verbatim, same as any
+// other sensor event, and the Pi (state_machine.py's on_foul()) decides whose
+// ball it is and issues the pinsetter rerack itself via
+// UART_PINSETTER_COMMAND. (Earlier version: the gateway auto-reracked
+// directly off its own per-lane cooldown timer, independent of the Pi's
+// actual game state -- removed 2026-08-07, see firmware/HANDOFF.md and
+// state_machine/state_machine.py's FOUL_COOLDOWN_S.)
 //
 // Speed nodes and ball detection nodes both send per-beam MSG_BEAM_EVENT,
 // told apart by data[0]'s BeamRole (0/1 = the speed node's paired beams,
@@ -23,30 +32,39 @@
 // reading, and acting on a ball reaching the pins, are both timing/scheduling
 // logic that lives on the Pi side of the bridge, not in any node's firmware.
 //
-// The PINSETTER NODE owns the machine config (lane -> relays) and all A2
+// The PINSETTER NODE owns the machine config (side -> relays) and all A2
 // state (ball, cycling, cooldown). This gateway sends pure semantic
-// MSG_COMMAND{code=CommandCode, laneNumber}.
+// MSG_COMMAND{code=CommandCode, laneSide}.
+//
+// DUAL-SEND DEDUPE: every downstream node sends its operational traffic on
+// BOTH ESP-NOW and RS485, so with both transports up this node sees every
+// message twice. dedupe (DualSendFilter, lanelink_protocol.h) drops the
+// second copy -- without it every foul, every ball-detect trigger, and every
+// STATUS_CYCLE_COMPLETE reached the Pi doubled. See PROTOCOL.md's
+// "Dual-send".
 //
 // EVERY openlanelink node -- including this one -- sends the SAME
 // NodeMessage struct for every purpose (registration, events, commands,
 // status, acks, broadcast score). There is no more JSON and no more
-// per-message-type struct. See firmware/PROTOCOL.md for the canonical
-// reference; this file's local copy of the struct/enums MUST match every
-// other node's.
+// per-message-type struct. See the shared `lanelink` Arduino library
+// (firmware/lib/lanelink, installed via
+// firmware/tools/install_lanelink_library.ps1 (Windows) or .sh) for the canonical definitions
+// and firmware/PROTOCOL.md for the prose reference.
 //
 // PI LINK: the scoring compute node is a Raspberry Pi wired directly to this
 // board's UART2 (pins below, unverified placeholder). This gateway
-// TRANSLATES between ESP-NOW and the Pi's UART framing -- it is not a raw
-// byte pass-through, so the Pi-facing UART payload shapes are unchanged from
-// before the ESP-NOW protocol unification (state_machine/protocol.py needs no
-// changes). See firmware/HANDOFF.md's "Gateway <-> Pi UART bridge" section
-// and PROTOCOL.md's "Gateway <-> Pi UART boundary" note.
+// TRANSLATES between the mesh and the Pi's UART framing -- it is not a raw
+// byte pass-through. The Pi-facing payload LAYOUTS are unchanged by the
+// A/B-side rename (same field sizes and offsets), only the meaning of the
+// lane byte changed: it now carries a LaneSide, which uart_bridge resolves
+// to a real lane number. See firmware/HANDOFF.md's "Gateway <-> Pi UART
+// bridge" section and PROTOCOL.md's "Gateway <-> Pi UART boundary" note.
 //
 // Bench testing: type commands into this node's serial monitor (9600):
-//   cycle 7          -- fire lane 7's cycle solenoid once
-//   rerack 7         -- cycle lane 7 through to a fresh full rack
-//   respot 7         -- stub on the node, logged + acked only
-//   power 7 on|off   -- latch/release lane 7's machine power
+//   cycle a          -- fire side A's cycle solenoid once
+//   rerack b         -- cycle side B through to a fresh full rack
+//   respot a         -- stub on the node, logged + acked only
+//   power a on|off   -- latch/release side A's machine power
 //   pstatus          -- ask the pinsetter node for a machine_status report
 //   status           -- dump this gateway's registered peers
 //
@@ -61,6 +79,9 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <HardwareSerial.h>
+
+#include <lanelink_protocol.h>
+#include <lanelink_rs485.h>
 
 const bool PINSETTER_ENABLED = true;
 
@@ -86,18 +107,18 @@ const bool PINSETTER_ENABLED = true;
   HardwareSerial PiLink(2);
 #endif
 
-// ---- RS485 (UART1) to the pinsetter -- wired fallback to insulate against
-// ESP-NOW failures. Pins UNVERIFIED, confirm against the board. Baud MUST
-// match the pinsetter's RS485_BAUD. Gated independently of ESP-NOW peer
-// registration -- see PROTOCOL.md's "Dual-send" section. ----
-const bool RS485_ENABLED = true;
+// ---- RS485 (UART1) -- the shared fallback bus every node taps, insulating
+// the whole mesh against ESP-NOW failures. Pins UNVERIFIED, confirm against
+// the board. Baud MUST match every other node's. Gated independently of
+// ESP-NOW peer registration -- see PROTOCOL.md's "Dual-send" section. Bus
+// timing/framing lives in lanelink_rs485.h; only this board's wiring is here. ----
+#define RS485_ENABLED 1
 #define RS485_TX_PIN 4    // placeholder, verify
 #define RS485_RX_PIN 5    // placeholder, verify
 #define RS485_BAUD 9600
-#define RS485_IDLE_MS 15
-#define RS485_JITTER_MAX_MS 20
-#define RS485_MAX_QUEUE 8
-HardwareSerial RS485(1);
+
+HardwareSerial RS485Port(1);
+Rs485Link rs485(RS485Port, RS485_ENABLED);
 
 uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -106,88 +127,47 @@ uint8_t BROADCAST_MAC[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 // only do that while on Ethernet -- see the note in pinsetter_node.ino).
 #define ESPNOW_CHANNEL 1
 
-// ============================================================
-// Wire protocol -- see firmware/PROTOCOL.md. MUST match every other node.
-// ============================================================
-
-enum MsgType : uint8_t {
-  MSG_REGISTER = 0, MSG_LANE_EVENT = 1, MSG_BEAM_EVENT = 2,
-  MSG_COMMAND = 3, MSG_STATUS = 4, MSG_SCORE_EVENT = 5, MSG_ACK = 6,
-};
-
-enum NodeType : uint8_t {
-  NODE_FOULING = 0, NODE_PINSETTER = 1, NODE_SCORING = 2, NODE_SPEED = 3,
-  NODE_BALL_DETECT = 4,
-};
-
-enum LaneEventCode : uint8_t { LANE_CLEAR = 0, LANE_FOUL = 1 };
-enum BeamEventCode : uint8_t { BEAM_CLEAR = 0, BEAM_BROKEN = 1 };
-
-// 0/1 are the speed node's paired beams; 2 is the ball detection node's
-// single near-pins beam, deliberately distinct so the Pi doesn't feed it
-// into speed pairing -- see PROTOCOL.md's MSG_BEAM_EVENT section.
-enum BeamRole : uint8_t {
-  ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1, ROLE_BALL_DETECT = 2,
-};
-
-enum CommandCode : uint8_t {
-  CMD_CYCLE = 0, CMD_POWER_ON = 1, CMD_POWER_OFF = 2,
-  CMD_RERACK = 3, CMD_RESPOT = 4, CMD_STATUS = 5,
-};
-
-enum StatusCode : uint8_t {
-  STATUS_RELAY_ACK = 0, STATUS_PULSE_ACK = 1, STATUS_PULSE_COMPLETE = 2,
-  STATUS_ALL_ACK = 3, STATUS_RELAY_FAULT = 4, STATUS_REFUSED_PULSE_ONLY = 5,
-  STATUS_MACHINE_STATUS = 6, STATUS_RESPOT_STUB = 7, STATUS_DI_CHANGE = 8,
-  STATUS_HEARTBEAT = 9, STATUS_CYCLE_COMPLETE = 10,
-};
-
-#define MAX_MACHINES_PER_MSG 4
-
-struct NodeMessage {
-  uint8_t msgType;
-  uint8_t seq;
-  uint8_t code;
-  uint8_t laneNumber;
-  uint32_t timestampMs;
-  uint8_t data[64];
-};   // sizeof = 72 bytes, fixed, no padding (see PROTOCOL.md)
+// Drops the second copy of every dual-sent message -- see the header comment
+// and lanelink_protocol.h's DualSendFilter.
+DualSendFilter dedupe;
 
 // ============================================================
-// Pi UART payload shapes -- UNCHANGED from before the ESP-NOW protocol
-// unification. These are NOT sent over ESP-NOW, only over the UART link to
-// the Pi, so state_machine/protocol.py needs no changes. This gateway translates
-// the unified NodeMessage into these on the way to the Pi.
+// Pi UART payload shapes. LAYOUTS are unchanged by the A/B-side rename (same
+// field sizes, same offsets, same struct padding), so state_machine/
+// uart_bridge protocol.py's struct format strings need no edit -- but the
+// lane byte now carries a LaneSide, not a lane number. uart_bridge resolves
+// it to a real lane. These are NOT sent over the mesh, only over the UART
+// link to the Pi; this gateway translates NodeMessage into them on the way.
 // ============================================================
 
-struct UartLaneEventPayload {   // matches state_machine/protocol.py's LANE_EVENT_FMT
+struct UartLaneEventPayload {   // matches uart_bridge/protocol.py's _LANE_EVENT_FMT
   uint8_t eventType;            // 0 = CLEAR, 1 = FOUL
-  uint8_t laneNumber;
+  uint8_t laneSide;             // LaneSide
   uint32_t timestampMs;
 };
 
-struct UartBeamEventPayload {   // matches state_machine/protocol.py's BEAM_EVENT_FMT
+struct UartBeamEventPayload {   // matches uart_bridge/protocol.py's _BEAM_EVENT_FMT
   uint8_t eventType;            // 3 = BEAM_CLEAR, 4 = BEAM_BROKEN
-  uint8_t laneNumber;
+  uint8_t laneSide;             // LaneSide
   uint8_t beamRole;
   uint32_t timestampMs;
 };
 
-struct UartPinsetterStatusPayload {   // matches state_machine/protocol.py's STATUS_EVENT_FMT
-  uint8_t statusCode;                 // StatusCode, see enum above
-  uint8_t laneNumber;                 // 0 for node-level status codes, see PROTOCOL.md
-  uint8_t ballNumber;                 // pinsetter's own reported ball (1 or 2) for laneNumber; 0 if unknown/not applicable -- see ballNumberForLane()
+struct UartPinsetterStatusPayload {   // matches uart_bridge/protocol.py's _STATUS_EVENT_FMT
+  uint8_t statusCode;                 // StatusCode, see lanelink_protocol.h
+  uint8_t laneSide;                   // LaneSide; NONE for node-level codes, see PROTOCOL.md
+  uint8_t ballNumber;                 // pinsetter's own reported ball (1 or 2) for laneSide; 0 if unknown/not applicable -- see ballForSide()
   uint32_t timestampMs;
 };
 
 struct PinsetterCommandFromPi { // Pi -> gateway, any CommandCode (cycle, rerack, ...)
   uint8_t command;
-  uint8_t laneNumber;
+  uint8_t laneSide;     // LaneSide -- the Pi has already mapped its lane number back to a side
   uint8_t cycleCount;   // CMD_CYCLE/CMD_RERACK only: exact solenoid pulse count the Pi wants run, computed from its own tracked/reported ball state -- the pinsetter no longer derives this itself (see pinsetter_node.ino's execPinsetterCommand). Ignored by other CommandCodes.
 };
 
-struct ScoreEventFromPi {       // Pi -> gateway, then broadcast onto ESP-NOW as MSG_SCORE_EVENT
-  uint8_t laneNumber;
+struct ScoreEventFromPi {       // Pi -> gateway, then broadcast onto the mesh as MSG_SCORE_EVENT
+  uint8_t laneSide;             // LaneSide
   uint8_t ballNumber;
   uint16_t pinfallMask;
   uint32_t timestampMs;
@@ -206,17 +186,6 @@ enum UartMsgType : uint8_t {
   UART_SCORE_EVENT       = 0x11,
 };
 
-// RS485 frame: [0xAA START][LEN][PAYLOAD = raw NodeMessage bytes][CHECKSUM].
-// No message-type wrapper byte -- NodeMessage's own msgType is already the
-// first payload byte, since the whole struct is framed directly.
-#define RS485_FRAME_START 0xAA
-#define RS485_FRAME_SIZE (sizeof(NodeMessage) + 3)   // 1 start + 1 len + payload + 1 checksum
-uint8_t rs485Queue[RS485_MAX_QUEUE][RS485_FRAME_SIZE];
-uint8_t rs485QueueLen[RS485_MAX_QUEUE];
-int rs485QueueHead = 0, rs485QueueTail = 0, rs485QueueCount = 0;
-unsigned long lastRS485Activity = 0;
-unsigned long rs485NextAttempt = 0;
-
 // ============================================================
 
 const int MAX_LANE_NODES = 8;
@@ -233,6 +202,15 @@ uint8_t pinsetterMac[6];
 bool pinsetterRegistered = false;
 
 uint8_t nextSeq = 0;   // for traceability in logs -- this node's outbound MSG_COMMAND/MSG_SCORE_EVENT aren't acked
+
+// Defined further down; declared here so the call order in this file reads
+// top-down rather than depending on the Arduino preprocessor's auto-generated
+// prototypes.
+void forwardLaneEventToPi(const NodeMessage &msg);
+void forwardBeamEventToPi(const NodeMessage &msg);
+void forwardStatusToPi(const NodeMessage &msg);
+void logMachineRecords(const uint8_t *data);
+void handleSerialCommand(String cmd);
 
 String macToString(const uint8_t *mac) {
   char buf[18];
@@ -388,31 +366,23 @@ void handleRegister(const uint8_t *mac, const NodeMessage &msg) {
 // cycleCount only matters for CMD_CYCLE/CMD_RERACK (exact solenoid pulse
 // count -- see PinsetterCommandFromPi's comment); defaulted to 1 so every
 // other CommandCode's call sites don't need to think about it.
-void sendPinsetterCommand(CommandCode command, uint8_t laneNumber, uint8_t cycleCount = 1) {
+void sendPinsetterCommand(CommandCode command, LaneSide side, uint8_t cycleCount = 1) {
   if (!PINSETTER_ENABLED) return;
 
   NodeMessage msg = {};
   msg.msgType = MSG_COMMAND;
   msg.seq = nextSeq++;
   msg.code = command;
-  msg.laneNumber = laneNumber;
+  msg.laneSide = side;
   msg.timestampMs = millis();
   msg.data[0] = cycleCount;
 
   Serial.print("[");
   Serial.print(millis());
   Serial.print(" ms] SEND pinsetter MSG_COMMAND { code=");
-  switch (command) {
-    case CMD_CYCLE:     Serial.print("CYCLE"); break;
-    case CMD_POWER_ON:  Serial.print("POWER_ON"); break;
-    case CMD_POWER_OFF: Serial.print("POWER_OFF"); break;
-    case CMD_RERACK:    Serial.print("RERACK"); break;
-    case CMD_RESPOT:    Serial.print("RESPOT"); break;
-    case CMD_STATUS:    Serial.print("STATUS"); break;
-    default:            Serial.print("UNKNOWN"); break;
-  }
-  Serial.print(", lane=");
-  Serial.print(laneNumber);
+  Serial.print(commandCodeName(command));
+  Serial.print(", side=");
+  Serial.print(laneSideName(side));
   if (command == CMD_CYCLE || command == CMD_RERACK) {
     Serial.print(", cycles=");
     Serial.print(cycleCount);
@@ -422,9 +392,9 @@ void sendPinsetterCommand(CommandCode command, uint8_t laneNumber, uint8_t cycle
   if (pinsetterRegistered) {
     esp_now_send(pinsetterMac, (uint8_t *)&msg, sizeof(msg));
   }
-  rs485Enqueue(msg);   // no-op if RS485_ENABLED is false
+  rs485.enqueue(msg);   // no-op if RS485_ENABLED is false
 
-  if (!pinsetterRegistered && !RS485_ENABLED) {
+  if (!pinsetterRegistered && !rs485.enabled()) {
     Serial.println("No transport available for pinsetter command (not ESP-NOW registered, RS485 disabled)");
   }
 }
@@ -434,74 +404,38 @@ void sendStatusAck(uint8_t seq) {
   ack.msgType = MSG_ACK;
   ack.seq = seq;
   ack.code = MSG_STATUS;
+  ack.laneSide = LaneSide::NONE;   // acks are node-level
   ack.timestampMs = millis();
 
   if (pinsetterRegistered) {
     esp_now_send(pinsetterMac, (uint8_t *)&ack, sizeof(ack));
   }
-  rs485Enqueue(ack);
-}
-
-// ---- RS485 (wired fallback to insulate against ESP-NOW failures) ----
-// Same framing pattern as the Pi UART link (below), but carries the raw
-// NodeMessage struct directly -- no message-type wrapper byte needed since
-// msgType is already NodeMessage's first field. Point-to-point (this gateway
-// <-> its own pinsetter), no addressing. Idle-detection + jitter before
-// transmitting since RS485 is typically half-duplex. See PROTOCOL.md.
-
-uint8_t rs485Checksum(uint8_t len, const uint8_t *payload) {
-  uint8_t sum = len;
-  for (uint8_t i = 0; i < len; i++) sum ^= payload[i];
-  return sum;
-}
-
-void rs485Enqueue(const NodeMessage &msg) {
-  if (!RS485_ENABLED) return;
-  if (rs485QueueCount >= RS485_MAX_QUEUE) {
-    rs485QueueHead = (rs485QueueHead + 1) % RS485_MAX_QUEUE;
-    rs485QueueCount--;
-  }
-  uint8_t *frame = rs485Queue[rs485QueueTail];
-  frame[0] = RS485_FRAME_START;
-  frame[1] = sizeof(NodeMessage);
-  memcpy(frame + 2, &msg, sizeof(NodeMessage));
-  frame[2 + sizeof(NodeMessage)] = rs485Checksum(sizeof(NodeMessage), frame + 2);
-  rs485QueueLen[rs485QueueTail] = RS485_FRAME_SIZE;
-
-  rs485QueueTail = (rs485QueueTail + 1) % RS485_MAX_QUEUE;
-  rs485QueueCount++;
-}
-
-void processRS485Queue() {
-  if (rs485QueueCount == 0) return;
-  unsigned long now = millis();
-  bool idle = (now - lastRS485Activity) > RS485_IDLE_MS;
-  if (idle && now >= rs485NextAttempt) {
-    RS485.write(rs485Queue[rs485QueueHead], rs485QueueLen[rs485QueueHead]);
-    lastRS485Activity = now;
-    rs485QueueHead = (rs485QueueHead + 1) % RS485_MAX_QUEUE;
-    rs485QueueCount--;
-  } else if (!idle) {
-    rs485NextAttempt = now + RS485_IDLE_MS + random(0, RS485_JITTER_MAX_MS);
-  }
-}
-
-const char *beamRoleName(uint8_t role) {
-  switch (role) {
-    case ROLE_UPSTREAM:    return "upstream";
-    case ROLE_DOWNSTREAM:  return "downstream";
-    case ROLE_BALL_DETECT: return "ball_detect";
-    default:               return "UNKNOWN";
-  }
+  rs485.enqueue(ack);
 }
 
 // Handles every msgType that can arrive on EITHER transport -- MSG_REGISTER
 // is the one exception (ESP-NOW only, needs a MAC to add as a peer; see
-// onDataRecv). Called from onDataRecv (ESP-NOW) and pollRS485 (RS485) alike,
-// so a fouling/speed/pinsetter node's message is handled identically no
-// matter which wire it came in on. "Messages between nodes stay uniform,
-// regardless of transport."
+// onDataRecv). Called from onDataRecv (ESP-NOW) and the RS485 poll callback
+// alike, so a node's message is handled identically no matter which wire it
+// came in on. "Messages between nodes stay uniform, regardless of transport."
+//
+// The dedupe check is here rather than in either transport's own path
+// precisely BECAUSE it has to span both: the whole point is catching the
+// second copy of a message whose first copy arrived on the other wire.
 void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
+  if (dedupe.seenBefore(msg)) {
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print(" ms] RECV via ");
+    Serial.print(via);
+    Serial.print(" ");
+    Serial.print(msgTypeName(msg.msgType));
+    Serial.print(" (seq=");
+    Serial.print(msg.seq);
+    Serial.println(") -- duplicate of the other transport's copy, dropped");
+    return;
+  }
+
   switch (msg.msgType) {
     case MSG_LANE_EVENT: {
       Serial.print("[");
@@ -510,8 +444,8 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       Serial.print(via);
       Serial.print(" MSG_LANE_EVENT { code=");
       Serial.print(msg.code == LANE_FOUL ? "FOUL" : "CLEAR");
-      Serial.print(", laneNumber=");
-      Serial.print(msg.laneNumber);
+      Serial.print(", side=");
+      Serial.print(laneSideName(msg.laneSide));
       Serial.println(" }");
 
       // No local action on LANE_FOUL -- forwarded as-is, same as CLEAR. The
@@ -526,8 +460,8 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       Serial.print(millis());
       Serial.print(" ms] RECV via ");
       Serial.print(via);
-      Serial.print(" MSG_BEAM_EVENT { lane=");
-      Serial.print(msg.laneNumber);
+      Serial.print(" MSG_BEAM_EVENT { side=");
+      Serial.print(laneSideName(msg.laneSide));
       Serial.print(", role=");
       Serial.print(beamRoleName(msg.data[0]));
       Serial.print(", ");
@@ -547,6 +481,8 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       Serial.print(via);
       Serial.print(" MSG_STATUS { code=");
       Serial.print(statusCodeName(msg.code));
+      Serial.print(", side=");
+      Serial.print(laneSideName(msg.laneSide));
       Serial.print(", relayState=0b");
       Serial.print(msg.data[0], BIN);
       Serial.print(", diState=0b");
@@ -564,47 +500,15 @@ void handleIncomingNodeMessage(const NodeMessage &msg, const String &via) {
       Serial.print(" ms] RECV via ");
       Serial.print(via);
       Serial.print(" -- unexpected msgType ");
-      Serial.println(msg.msgType);
+      Serial.println(msgTypeName(msg.msgType));
       break;
   }
 }
 
-void pollRS485() {
-  static uint8_t buf[sizeof(NodeMessage)];
-  static uint8_t bufLen = 0;
-  static uint8_t expectedLen = 0;
-  static bool haveLen = false;
-  static bool sawStart = false;
-
-  while (RS485.available()) {
-    lastRS485Activity = millis();
-    uint8_t b = RS485.read();
-
-    if (!sawStart) {
-      if (b == RS485_FRAME_START) { sawStart = true; haveLen = false; bufLen = 0; }
-      continue;
-    }
-    if (!haveLen) {
-      expectedLen = b;
-      haveLen = true;
-      bufLen = 0;
-      if (expectedLen != sizeof(NodeMessage)) { sawStart = false; }
-      continue;
-    }
-    if (bufLen < expectedLen) {
-      buf[bufLen++] = b;
-      continue;
-    }
-
-    if (b == rs485Checksum(expectedLen, buf)) {
-      NodeMessage msg;
-      memcpy(&msg, buf, sizeof(msg));
-      handleIncomingNodeMessage(msg, "RS485");
-    } else {
-      Serial.println("RS485 checksum mismatch, dropping frame");
-    }
-    sawStart = false;
-  }
+// Rs485Link::poll() hands verified frames here; the transport label is fixed
+// because anything arriving on this port came off the RS485 bus by definition.
+void onRs485Message(const NodeMessage &msg) {
+  handleIncomingNodeMessage(msg, "RS485");
 }
 
 // ---- Pi UART bridge ----
@@ -636,39 +540,40 @@ void sendToPi(UartMsgType msgType, const uint8_t *data, uint8_t dataLen) {
 
 void forwardLaneEventToPi(const NodeMessage &msg) {
   UartLaneEventPayload p;
-  p.eventType = (msg.code == LANE_FOUL) ? 1 : 0;   // state_machine/protocol.py EVENT_FOUL/EVENT_CLEAR
-  p.laneNumber = msg.laneNumber;
+  p.eventType = (msg.code == LANE_FOUL) ? 1 : 0;   // uart_bridge/protocol.py EVENT_FOUL/EVENT_CLEAR
+  p.laneSide = (uint8_t)msg.laneSide;
   p.timestampMs = msg.timestampMs;
   sendToPi(UART_LANE_EVENT, (const uint8_t *)&p, sizeof(p));
 }
 
 void forwardBeamEventToPi(const NodeMessage &msg) {
   UartBeamEventPayload p;
-  p.eventType = (msg.code == BEAM_BROKEN) ? 4 : 3;  // state_machine/protocol.py EVENT_BEAM_BROKEN/EVENT_BEAM_CLEAR
-  p.laneNumber = msg.laneNumber;
+  p.eventType = (msg.code == BEAM_BROKEN) ? 4 : 3;  // uart_bridge/protocol.py EVENT_BEAM_BROKEN/EVENT_BEAM_CLEAR
+  p.laneSide = (uint8_t)msg.laneSide;
   p.beamRole = msg.data[0];
   p.timestampMs = msg.timestampMs;
   sendToPi(UART_BEAM_EVENT, (const uint8_t *)&p, sizeof(p));
 }
 
 // Every MSG_STATUS carries every machine's MachineRecord (data[2..17], 4
-// bytes each: laneNumber, flags, cooldownLo, cooldownHi -- see
-// pinsetter_node.ino's sendStatusEvent()), regardless of which one
-// triggered the message, so this always has fresh data no matter which
-// statusCode fired. flags bit 0x04 is the pinsetter's own ball counter (set
-// = ball 2). Returns 0 (the wire's "unknown/not applicable" sentinel, see
-// protocol.py's StatusEvent) if laneNumber has no record here -- a
-// node-level status (laneNumber=0) or a lane this pinsetter doesn't own.
-uint8_t ballNumberForLane(const NodeMessage &msg, uint8_t laneNumber) {
-  // 0 is never a real lane -- it's the node-level sentinel -- and it's ALSO
-  // what an unused MachineRecord slot's laneNumber reads as (zero-filled),
-  // so without this guard a node-level status would spuriously "match" the
-  // first empty slot instead of correctly finding nothing.
-  if (laneNumber == 0) return 0;
+// bytes each: laneSide, flags, cooldownLo, cooldownHi -- see
+// lanelink_protocol.h and pinsetter_node.ino's sendStatusEvent()),
+// regardless of which one triggered the message, so this always has fresh
+// data no matter which statusCode fired. MACHINE_FLAG_BALL2 is the
+// pinsetter's own ball counter. Returns 0 (the wire's "unknown/not
+// applicable" sentinel, see uart_bridge/protocol.py's StatusEvent) if the
+// side has no record here -- a node-level status or a side this pinsetter
+// doesn't own.
+uint8_t ballForSide(const NodeMessage &msg, LaneSide side) {
+  // LaneSide::NONE is the node-level sentinel, and it's ALSO what an unused
+  // MachineRecord slot's side byte reads as (zero-filled), so without this
+  // guard a node-level status would spuriously "match" the first empty slot
+  // instead of correctly finding nothing.
+  if (side == LaneSide::NONE) return 0;
   for (int i = 0; i < MAX_MACHINES_PER_MSG; i++) {
-    int off = 2 + i * 4;
-    if (msg.data[off] == laneNumber) {
-      return (msg.data[off + 1] & 0x04) ? 2 : 1;
+    int off = machineRecordOffset(i);
+    if (msg.data[off] == (uint8_t)side) {
+      return (msg.data[off + 1] & MACHINE_FLAG_BALL2) ? 2 : 1;
     }
   }
   return 0;
@@ -677,26 +582,26 @@ uint8_t ballNumberForLane(const NodeMessage &msg, uint8_t laneNumber) {
 void forwardStatusToPi(const NodeMessage &msg) {
   UartPinsetterStatusPayload p;
   p.statusCode = msg.code;
-  p.laneNumber = msg.laneNumber;
-  p.ballNumber = ballNumberForLane(msg, msg.laneNumber);
+  p.laneSide = (uint8_t)msg.laneSide;
+  p.ballNumber = ballForSide(msg, msg.laneSide);
   p.timestampMs = msg.timestampMs;
   sendToPi(UART_PINSETTER_STATUS, (const uint8_t *)&p, sizeof(p));
 }
 
-void broadcastScoreEvent(uint8_t laneNumber, uint8_t ballNumber, uint16_t pinfallMask, uint32_t timestampMs) {
+void broadcastScoreEvent(LaneSide side, uint8_t ballNumber, uint16_t pinfallMask, uint32_t timestampMs) {
   NodeMessage msg = {};
   msg.msgType = MSG_SCORE_EVENT;
   msg.seq = nextSeq++;
   msg.code = ballNumber;
-  msg.laneNumber = laneNumber;
+  msg.laneSide = side;
   msg.timestampMs = timestampMs;
   msg.data[0] = (uint8_t)(pinfallMask & 0xFF);
   msg.data[1] = (uint8_t)(pinfallMask >> 8);
 
   Serial.print("[");
   Serial.print(millis());
-  Serial.print(" ms] BROADCAST MSG_SCORE_EVENT { lane=");
-  Serial.print(laneNumber);
+  Serial.print(" ms] BROADCAST MSG_SCORE_EVENT { side=");
+  Serial.print(laneSideName(side));
   Serial.print(", ball=");
   Serial.print(ballNumber);
   Serial.print(", pinfallMask=0b");
@@ -709,7 +614,7 @@ void broadcastScoreEvent(uint8_t laneNumber, uint8_t ballNumber, uint16_t pinfal
   // but every receiver's default dispatch case already logs-and-ignores
   // unknown-but-valid msgTypes harmlessly, so there's no reason to withhold
   // it from the one transport that's actually a true broadcast medium.
-  rs485Enqueue(msg);
+  rs485.enqueue(msg);
 }
 
 void handlePiMessage(uint8_t msgType, const uint8_t *payload, uint8_t len) {
@@ -726,20 +631,20 @@ void handlePiMessage(uint8_t msgType, const uint8_t *payload, uint8_t len) {
       Serial.print("[");
       Serial.print(millis());
       Serial.print(" ms] RECV from Pi PinsetterCommandFromPi { command=");
-      Serial.print(req.command);
-      Serial.print(", lane=");
-      Serial.print(req.laneNumber);
+      Serial.print(commandCodeName(req.command));
+      Serial.print(", side=");
+      Serial.print(laneSideName((LaneSide)req.laneSide));
       Serial.print(", cycles=");
       Serial.print(req.cycleCount);
       Serial.println(" }");
-      sendPinsetterCommand((CommandCode)req.command, req.laneNumber, req.cycleCount);
+      sendPinsetterCommand((CommandCode)req.command, (LaneSide)req.laneSide, req.cycleCount);
       break;
     }
     case UART_SCORE_EVENT: {
       if (len != sizeof(ScoreEventFromPi)) return;
       ScoreEventFromPi ev;
       memcpy(&ev, payload, sizeof(ev));
-      broadcastScoreEvent(ev.laneNumber, ev.ballNumber, ev.pinfallMask, ev.timestampMs);
+      broadcastScoreEvent((LaneSide)ev.laneSide, ev.ballNumber, ev.pinfallMask, ev.timestampMs);
       break;
     }
     default:
@@ -825,36 +730,18 @@ void pollPiLink() {
 }
 
 // ---- MSG_STATUS logging ----
-const char *statusCodeName(uint8_t code) {
-  switch (code) {
-    case STATUS_RELAY_ACK:          return "RELAY_ACK";
-    case STATUS_PULSE_ACK:          return "PULSE_ACK";
-    case STATUS_PULSE_COMPLETE:     return "PULSE_COMPLETE";
-    case STATUS_ALL_ACK:            return "ALL_ACK";
-    case STATUS_RELAY_FAULT:        return "RELAY_FAULT";
-    case STATUS_REFUSED_PULSE_ONLY: return "REFUSED_PULSE_ONLY";
-    case STATUS_MACHINE_STATUS:     return "MACHINE_STATUS";
-    case STATUS_RESPOT_STUB:        return "RESPOT_STUB";
-    case STATUS_DI_CHANGE:          return "DI_CHANGE";
-    case STATUS_HEARTBEAT:          return "HEARTBEAT";
-    case STATUS_CYCLE_COMPLETE:     return "CYCLE_COMPLETE";
-    default:                        return "UNKNOWN";
-  }
-}
-
 void logMachineRecords(const uint8_t *data) {
   for (int i = 0; i < MAX_MACHINES_PER_MSG; i++) {
-    int off = 2 + i * 4;
-    uint8_t lane = data[off];
-    if (lane == 0) continue;   // unused slot
+    int off = machineRecordOffset(i);
+    LaneSide side = (LaneSide)data[off];
+    if (side == LaneSide::NONE) continue;   // unused slot
     uint8_t flags = data[off + 1];
-    uint16_t cooldownMs = data[off + 2] | (data[off + 3] << 8);
-    Serial.print("    lane "); Serial.print(lane);
-    Serial.print(" on="); Serial.print((flags & 0x01) ? 1 : 0);
-    Serial.print(" cycling="); Serial.print((flags & 0x02) ? 1 : 0);
-    Serial.print(" ball="); Serial.print((flags & 0x04) ? 2 : 1);
-    Serial.print(" pendingCycles="); Serial.print((flags >> 3) & 0x03);
-    Serial.print(" cooldownMs="); Serial.println(cooldownMs);
+    Serial.print("    side "); Serial.print(laneSideName(side));
+    Serial.print(" on="); Serial.print((flags & MACHINE_FLAG_ON) ? 1 : 0);
+    Serial.print(" cycling="); Serial.print((flags & MACHINE_FLAG_CYCLING) ? 1 : 0);
+    Serial.print(" ball="); Serial.print((flags & MACHINE_FLAG_BALL2) ? 2 : 1);
+    Serial.print(" pendingCycles="); Serial.print((flags >> MACHINE_PENDING_SHIFT) & MACHINE_PENDING_MASK);
+    Serial.print(" cooldownMs="); Serial.println(machineRecordCooldownMs(data, i));
   }
 }
 
@@ -875,8 +762,8 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 
   // MSG_REGISTER is ESP-NOW only (needs a MAC to add as a peer -- no
   // equivalent concept on a raw RS485 bus) so it's handled here, not in the
-  // shared handler. Everything else goes through handleIncomingNodeMessage,
-  // shared with pollRS485, so behavior is identical regardless of transport.
+  // shared handler. It also deliberately skips the dual-send dedupe: it's
+  // never dual-sent, and it repeats every 10s by design.
   if (msg.msgType == MSG_REGISTER) {
     // Nodes re-announce every 10s so a gateway reboot re-learns them.
     // Silently ignore re-registrations from nodes we already know.
@@ -893,7 +780,7 @@ void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
     Serial.print(" ms] RECV from ");
     Serial.print(macToString(info->src_addr));
     Serial.print(" MSG_REGISTER { nodeType=");
-    Serial.print(msg.code);
+    Serial.print(nodeTypeName(msg.code));
     Serial.println(" }");
 
     handleRegister(info->src_addr, msg);
@@ -924,7 +811,21 @@ void printStatus() {
   Serial.print("Pinsetter node: ");
   Serial.println(pinsetterRegistered ? macToString(pinsetterMac) : "not registered");
   Serial.println("(machine config lives on the pinsetter node -- use pstatus)");
+  Serial.println("(this gateway addresses sides A/B only -- it has no lane numbers)");
   Serial.println("------------------------");
+}
+
+// Bench console commands take a side (a|b), not a lane number -- this
+// gateway has no idea which lanes its pair is. Returns LaneSide::NONE on
+// anything unparseable, which every caller reports as a usage error.
+LaneSide parseSideArg(String arg) {
+  arg.trim();
+  if (arg.length() != 1) return LaneSide::NONE;
+  return laneSideFromChar(arg.charAt(0));
+}
+
+void printUsage() {
+  Serial.println("commands: cycle <a|b> | rerack <a|b> | respot <a|b> | power <a|b> on|off | pstatus | status");
 }
 
 void handleSerialCommand(String cmd) {
@@ -933,34 +834,54 @@ void handleSerialCommand(String cmd) {
 
   if (cmd == "status") {
     printStatus();
-  } else if (cmd == "pstatus") {
-    sendPinsetterCommand(CMD_STATUS, 0);
-  } else if (cmd.startsWith("cycle ")) {
-    sendPinsetterCommand(CMD_CYCLE, cmd.substring(6).toInt(), 1);
-  } else if (cmd.startsWith("rerack ")) {
+    return;
+  }
+  if (cmd == "pstatus") {
+    sendPinsetterCommand(CMD_STATUS, LaneSide::NONE);
+    return;
+  }
+
+  if (cmd.startsWith("cycle ")) {
+    LaneSide side = parseSideArg(cmd.substring(6));
+    if (side == LaneSide::NONE) { printUsage(); return; }
+    sendPinsetterCommand(CMD_CYCLE, side, 1);
+    return;
+  }
+  if (cmd.startsWith("rerack ")) {
+    LaneSide side = parseSideArg(cmd.substring(7));
+    if (side == LaneSide::NONE) { printUsage(); return; }
     // No Pi-tracked ball state available from the bench console -- 2 is the
     // safe default (sweep + spot fresh works regardless of the machine's
     // actual current position; see state_machine.py's rerack cycle-count
     // logic for the real Pi-driven decision).
-    sendPinsetterCommand(CMD_RERACK, cmd.substring(7).toInt(), 2);
-  } else if (cmd.startsWith("respot ")) {
-    sendPinsetterCommand(CMD_RESPOT, cmd.substring(7).toInt());
-  } else if (cmd.startsWith("power ")) {
+    sendPinsetterCommand(CMD_RERACK, side, 2);
+    return;
+  }
+  if (cmd.startsWith("respot ")) {
+    LaneSide side = parseSideArg(cmd.substring(7));
+    if (side == LaneSide::NONE) { printUsage(); return; }
+    sendPinsetterCommand(CMD_RESPOT, side);
+    return;
+  }
+  if (cmd.startsWith("power ")) {
     String rest = cmd.substring(6);
     int sp = rest.indexOf(' ');
     if (sp == -1) {
-      Serial.println("usage: power <lane> on|off");
+      Serial.println("usage: power <a|b> on|off");
       return;
     }
-    uint8_t lane = rest.substring(0, sp).toInt();
+    LaneSide side = parseSideArg(rest.substring(0, sp));
     String action = rest.substring(sp + 1);
     action.trim();
-    if (action == "on")       sendPinsetterCommand(CMD_POWER_ON, lane);
-    else if (action == "off") sendPinsetterCommand(CMD_POWER_OFF, lane);
-    else Serial.println("usage: power <lane> on|off");
-  } else {
-    Serial.println("commands: cycle <lane> | rerack <lane> | respot <lane> | power <lane> on|off | pstatus | status");
+    if (side == LaneSide::NONE || (action != "on" && action != "off")) {
+      Serial.println("usage: power <a|b> on|off");
+      return;
+    }
+    sendPinsetterCommand(action == "on" ? CMD_POWER_ON : CMD_POWER_OFF, side);
+    return;
   }
+
+  printUsage();
 }
 
 void pollSerial() {
@@ -994,11 +915,9 @@ void setup() {
   Serial.print(PI_UART_BAUD);
   Serial.println(" baud");
 
-  if (RS485_ENABLED) {
-    RS485.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-    randomSeed(esp_random());
-    Serial.println("RS485 fallback link up");
-  }
+  randomSeed(esp_random());
+  rs485.begin(RS485_BAUD, RS485_RX_PIN, RS485_TX_PIN);
+  if (rs485.enabled()) Serial.println("RS485 fallback link up");
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // modem sleep makes ESP-NOW receivers miss packets
@@ -1024,7 +943,7 @@ void setup() {
   }
 
   Serial.println("Waiting for nodes to register...");
-  Serial.println("commands: cycle <lane> | power <lane> on|off | status");
+  printUsage();
 }
 
 void loop() {
@@ -1035,6 +954,6 @@ void loop() {
   pollSerial();
 #endif
   pollPiLink();
-  pollRS485();
-  processRS485Queue();
+  rs485.poll(onRs485Message);
+  rs485.processQueue();
 }

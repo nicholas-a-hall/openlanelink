@@ -8,6 +8,15 @@ heartbeat timing) in prose/table form. This doc is the struct-and-enum
 reference both of those point to — if the wire format changes, change it
 here first, then propagate.
 
+**The code that implements this doc lives in exactly one place:** the
+`lanelink` Arduino library, `firmware/lib/lanelink/src/` — every sketch
+`#include <lanelink_protocol.h>` rather than carrying its own copy, because
+nodes whose enum values or struct layout drift apart don't fail loudly, they
+silently misparse every frame from every peer. Install it once with
+`firmware/tools/install_lanelink_library.ps1` (Windows) or
+`install_lanelink_library.sh` (macOS/Linux); both link the repo folder into
+your Arduino sketchbook so edits take effect on the next compile.
+
 ## One message struct, uniform across transports
 **The messages between nodes are uniform regardless of transport.** A node
 does not have a different vocabulary for ESP-NOW vs. RS485 — it has one
@@ -69,11 +78,19 @@ enum NodeType : uint8_t {
   NODE_BALL_DETECT = 4,
 };
 
+// A gateway's mesh is exactly ONE LANE PAIR, so nothing on the wire needs a
+// lane number -- only which of the pair's two sides an event concerns.
+enum class LaneSide : uint8_t {
+  NONE = 0,   // node-level / not side-specific (also: unused MachineRecord slot)
+  A    = 1,
+  B    = 2,
+};
+
 struct NodeMessage {
   uint8_t msgType;       // MsgType
   uint8_t seq;           // ack/retry correlation (see "Reliability scope")
   uint8_t code;          // msgType-scoped sub-code, see table below
-  uint8_t laneNumber;    // 0 = node-level / not lane-specific
+  LaneSide laneSide;     // one byte; LaneSide::NONE = node-level
   uint32_t timestampMs;  // sender's own millis()
   uint8_t data[64];      // msgType-specific, see table below
 };                        // sizeof = 1+1+1+1 + 4 + 64 = 72 bytes, fixed, no padding
@@ -96,13 +113,43 @@ only has one spare `HardwareSerial` on the gateway after the Pi link, so a
 star of separate point-to-point RS485 links isn't even physically possible
 here).
 
+## Lane sides, not lane numbers
+**No node knows its lane number, and none can be configured with one.** A
+gateway's mesh is exactly one lane pair — one gateway, one ESP-NOW
+registration domain, one RS485 bus, two sides — so a lane number carries no
+information the mesh can act on. `laneSide` names which of the pair's two
+sides an event concerns and nothing more.
+
+This is what makes firmware **generically provisionable**: every fouling,
+speed, ball detection, and pinsetter sketch is byte-identical on every lane
+pair in the house, with `GATEWAY_MAC` the only per-pair constant left. There
+is nothing to edit and reflash when a board moves to a different pair, and
+no lane number that can silently disagree with what the Pi believes.
+
+Resolving side → real lane number happens exactly once, in software, at the
+mesh boundary: `uart_bridge/lane_map.py` (`LANE_SIDE_A`/`LANE_SIDE_B`
+environment variables). Everything upstream of that — `state_machine`,
+`vision`, the UI — speaks real lane numbers and was unaffected by this
+change; the bridge's `/events` payloads still carry `laneNumber`.
+
+`LaneSide::NONE` deliberately keeps the value `0` had as the old
+`laneNumber` field's "node-level / not lane-specific" sentinel, so every
+`== 0` check on both sides of the wire kept its exact meaning through the
+rename. **The byte layout did not change** — same offsets, same size, same
+padding — only what the fourth byte means.
+
+**Consequence for the pinsetter's 8RO board:** channels 5–8 are spare, not
+"a second lane pair." A second pair needs its own gateway and its own
+pinsetter node, because a pair is defined by its gateway. `MAX_MACHINES_PER_MSG`
+stays 4 for wire compatibility; only two slots are ever populated now.
+
 ## Per-`msgType` field mapping
 
 ### `MSG_REGISTER` — any node → gateway, boot + every 10s, **ESP-NOW only**
 | field | value |
 |---|---|
 | `code` | `NodeType` of the sender |
-| `laneNumber` | 0 |
+| `laneSide` | `LaneSide::NONE` — registration is node-level |
 | `data[]` | unused |
 
 RS485 doesn't need a registration/discovery handshake — there's no peer
@@ -117,14 +164,16 @@ enum LaneEventCode : uint8_t { LANE_CLEAR = 0, LANE_FOUL = 1 };
 | field | value |
 |---|---|
 | `code` | `LaneEventCode` |
-| `laneNumber` | the lane |
+| `laneSide` | which side of the pair tripped |
 | `data[]` | unused |
 
-The fouling node only ever transmits on RS485 — it has no recv callback on
-either transport (see `HANDOFF.md`'s "nodes are dumb" principle), so there's
-nothing to gate on registration or peer state the way the pinsetter's
-two-way traffic is. It just enqueues the RS485 frame unconditionally
-alongside every ESP-NOW send.
+The fouling node acts on nothing it receives, on either transport (see
+`HANDOFF.md`'s "nodes are dumb" principle), so there's nothing to gate sends
+on the way the pinsetter's two-way traffic is — it enqueues the RS485 frame
+unconditionally alongside every ESP-NOW send. It does still **read** the bus
+every loop (`rs485.observeBus()`), discarding what it decodes, because that
+is the only way its send-side collision avoidance can see anyone else's
+traffic — see "RS485 framing" below.
 
 ### `MSG_BEAM_EVENT` — speed node **or ball detection node** → gateway, **dual-sent (ESP-NOW + RS485)**
 ```cpp
@@ -134,7 +183,7 @@ enum BeamRole      : uint8_t { ROLE_UPSTREAM = 0, ROLE_DOWNSTREAM = 1, ROLE_BALL
 | field | value |
 |---|---|
 | `code` | `BeamEventCode` |
-| `laneNumber` | the lane |
+| `laneSide` | which side of the pair the beam watches |
 | `data[0]` | `BeamRole` — 0/1 from a speed node, 2 from a ball detection node |
 
 No timing/pairing math here or anywhere in firmware — see `HANDOFF.md`'s
@@ -173,7 +222,7 @@ enum CommandCode : uint8_t {
 | field | value |
 |---|---|
 | `code` | `CommandCode` |
-| `laneNumber` | target lane (ignored for `CMD_STATUS`) |
+| `laneSide` | target side (ignored for `CMD_STATUS`, which is node-level) |
 | `data[0]` | `cycleCount` — `CMD_CYCLE`/`CMD_RERACK` only: exact solenoid pulse count to run, decided by the Pi (`state_machine.py`'s `_rerack_cycle_count()`) from the pinsetter's own last-reported ball number (see `MSG_STATUS` below), not derived locally on the pinsetter (2026-08-07 — see `firmware/HANDOFF.md`). Ignored by other `CommandCode`s. |
 | `data[1..63]` | unused |
 
@@ -194,7 +243,7 @@ enum StatusCode : uint8_t {
 };
 
 struct MachineRecord {      // 4 bytes, naturally aligned, no padding
-  uint8_t laneNumber;       // 0 = unused slot
+  uint8_t laneSide;         // LaneSide; NONE (0) = unused slot
   uint8_t flags;             // bit0=on, bit1=cycling, bit2=ball(0=1st/1=2nd), bits3-4=pendingCycles(0-3)
   uint16_t cooldownMs;       // full ms precision, 0-65535 (A2 cycle time ~8000ms fits easily)
 };
@@ -203,13 +252,13 @@ struct MachineRecord {      // 4 bytes, naturally aligned, no padding
 | field | value |
 |---|---|
 | `code` | `StatusCode` |
-| `laneNumber` | the specific machine's lane for single-machine events (`STATUS_RELAY_ACK`, `STATUS_PULSE_ACK`, `STATUS_PULSE_COMPLETE`, `STATUS_REFUSED_PULSE_ONLY`, `STATUS_CYCLE_COMPLETE`, `STATUS_RESPOT_STUB`); **0** for node-level events that cover every machine (`STATUS_ALL_ACK`, `STATUS_RELAY_FAULT`, `STATUS_MACHINE_STATUS`, `STATUS_DI_CHANGE`, `STATUS_HEARTBEAT`) |
+| `laneSide` | the specific machine's side for single-machine events (`STATUS_RELAY_ACK`, `STATUS_PULSE_ACK`, `STATUS_PULSE_COMPLETE`, `STATUS_REFUSED_PULSE_ONLY`, `STATUS_CYCLE_COMPLETE`, `STATUS_RESPOT_STUB`); **`LaneSide::NONE`** for node-level events that cover every machine (`STATUS_ALL_ACK`, `STATUS_RELAY_FAULT`, `STATUS_MACHINE_STATUS`, `STATUS_DI_CHANGE`, `STATUS_HEARTBEAT`) |
 | `data[0]` | `relayState` (raw 8-bit relay bitmask) |
 | `data[1]` | `diState` (raw 8-bit DI bitmask) |
 | `data[2..17]` | up to `MAX_MACHINES_PER_MSG` (4) × `MachineRecord`, 4 bytes each — **always all machines, regardless of `code`**, same as the old JSON always included the full `machines[]` array no matter what `type` was |
 | `data[18..63]` | reserved, zeroed on send — 46 bytes free for future fields (firmware version, uptime, error codes, RSSI, ...) without another protocol-breaking redesign |
 
-`MachineRecord.flags`' ball bit is extracted by the gateway (matching `laneNumber` against the record array — see `ballNumberForLane()` in `gateway_node.ino`) and forwarded to the Pi on every `UART_PINSETTER_STATUS` frame as of 2026-08-07 (see "Gateway ↔ Pi UART boundary" below) — previously only `statusCode`/`laneNumber`/`timestampMs` crossed that boundary.
+`MachineRecord.flags`' ball bit is extracted by the gateway (matching `laneSide` against the record array — see `ballForSide()` in `gateway_node.ino`) and forwarded to the Pi on every `UART_PINSETTER_STATUS` frame as of 2026-08-07 (see "Gateway ↔ Pi UART boundary" below) — previously only `statusCode`/`laneSide`/`timestampMs` crossed that boundary.
 
 ### `MSG_SCORE_EVENT` — gateway → broadcast, **on both transports**
 Originates from the Pi via `UART_SCORE_EVENT`; the gateway rebroadcasts it —
@@ -225,7 +274,7 @@ harmlessly, so there's no reason to withhold it from RS485.
 | field | value |
 |---|---|
 | `code` | ball number (1 or 2) |
-| `laneNumber` | the lane |
+| `laneSide` | which side the ball was thrown on |
 | `data[0..1]` | `pinfallMask`, `uint16_t` LE, bit per pin 1–10, **bit=1 means that pin fell on this ball** (bit0=pin1 ... bit9=pin10) — the count/delta of *newly* fallen pins, not a raw standing-pin snapshot. Was ambiguous until `state_machine/game_state.py` needed a firm answer to score against; that module works in per-ball pinfall *counts* derived from this, not the mask directly — see its docstring. The camera pipeline (`pinfall.py`, not yet implemented) is responsible for turning a raw standing-pins observation into this delta before it ever reaches `MSG_SCORE_EVENT`. |
 
 ### `MSG_ACK` — gateway → pinsetter, **dual-sent (ESP-NOW + RS485)**
@@ -233,7 +282,7 @@ harmlessly, so there's no reason to withhold it from RS485.
 |---|---|
 | `code` | the `msgType` being acked (always `MSG_STATUS` today — see "Reliability scope") |
 | `seq` | the `seq` value being acknowledged |
-| `laneNumber`, `data[]` | unused |
+| `laneSide`, `data[]` | unused |
 
 ## RS485 framing
 RS485 is a raw byte stream, so — same as the gateway↔Pi UART link — messages
@@ -286,6 +335,18 @@ The pinsetter's existing send-side collision-avoidance queue (idle detection
 node now, not just the pinsetter — with more transmitters sharing one bus,
 this matters more than it used to, not less.
 
+**Idle detection only works if a node actually reads the bus.** The activity
+timestamp it compares against is updated when bytes are *read*, so a node
+that never reads sees only its own transmissions, concludes the bus is quiet
+whenever it personally hasn't spoken recently, and transmits straight over
+another node's frame — corrupting both, since RS485 is half-duplex with no
+arbitration. **Every node therefore calls into `Rs485Link` every loop**, even
+the three that act on nothing: the pure emitters (fouling, speed, ball
+detect) call `observeBus()`, which reads and discards, while the gateway and
+pinsetter call `poll(handler)`. This makes each emitter board's **RS485 RX
+pin required wiring**, not optional — a floating RX puts the node right back
+to transmitting blind.
+
 ## Dual-send: what actually goes out on both channels
 **Every `MSG_LANE_EVENT`, `MSG_BEAM_EVENT`, `MSG_COMMAND`, `MSG_STATUS`, and
 `MSG_ACK` is sent on ESP-NOW and RS485 simultaneously, unconditionally** —
@@ -309,6 +370,47 @@ gate sends on beyond `RS485_ENABLED` — they just always try both.
 `MSG_REGISTER` is the only message type that stays ESP-NOW-only — a raw UART
 bus has no discovery/registration concept. Every other message type,
 including the broadcast `MSG_SCORE_EVENT`, goes out on both transports.
+
+### Receivers must filter the second copy
+Dual-sending means that **when both transports are up, a receiver sees every
+message twice**. That is the intended cost of the redundancy, but it is only
+harmless if receivers deduplicate: without it the gateway forwarded every
+foul, every ball-detect trigger, and every `STATUS_CYCLE_COMPLETE` to the Pi
+*twice* — double-recorded balls and double pinsetter cycles.
+
+Both copies are **byte-identical**: senders stamp `seq` and `timestampMs`
+once, before either send. So an exact key rather than a hash works, with no
+false positives — a genuinely new message differs in at least `timestampMs`
+or `seq`. `DualSendFilter` (`lanelink_protocol.h`) keys an 8-slot ring on
+`{msgType, seq, code, laneSide, data[0], timestampMs}` over a 1500 ms window.
+
+- `data[0]` is in the key because `MSG_BEAM_EVENT` has **two** senders (speed
+  and ball detect nodes) with independent `seq` counters; their beam role is
+  what separates a same-millisecond, same-`seq` coincidence.
+- The window covers the worst-case lag between copies, which is the RS485
+  queue draining ahead of the frame: 8 queued frames × 75 bytes at 9600 baud
+  ≈ 900 ms, plus idle/jitter backoff.
+- `MSG_REGISTER` deliberately bypasses the filter: it is never dual-sent, and
+  it repeats every 10 s by design.
+
+**Both receivers apply this**, in their own `handleIncomingNodeMessage()` —
+shared by both transports, which is the whole point, since the duplicate
+arrives on the *other* wire from the original. On the gateway it stops every
+foul, beam, and status reaching the Pi twice; on the pinsetter it stops one
+`CMD_RERACK` firing two machine cycles.
+
+The pinsetter previously used a single-slot "was that the last seq I saw"
+check. That catches the common back-to-back pair but not interleaved
+delivery: espnow(A), espnow(B), rs485(A) leaves A looking new again and
+re-runs it. Keying the ring on the whole message makes arrival order
+irrelevant.
+
+A receiver on the shared RS485 bus also sees traffic that simply isn't its
+business — the pinsetter reads every fouling/speed/ball-detect event, plus
+the broadcast `MSG_SCORE_EVENT`. Those are ignored **silently and
+explicitly**, not via the "unrecognized msgType" branch, which stays reserved
+for something genuinely unknown. Logging them instead produced a line per
+beam break, per foul, and per ball.
 
 ## Reliability scope — what gets acked, what doesn't
 Only `MSG_STATUS` is tracked with seq/ack/retry, same as before this
@@ -338,7 +440,7 @@ Everything else is fire-and-forget, unchanged from before:
 ## Struct-padding gotcha (bit us once already)
 Any struct with `uint8_t` fields followed by a `uint32_t` gets compiler
 padding to 4-byte-align the `uint32_t` — this is why `NodeMessage`'s
-`timestampMs` sits at byte offset 4, not immediately after `laneNumber`.
+`timestampMs` sits at byte offset 4, not immediately after `laneSide`.
 `MachineRecord`'s `cooldownMs` (`uint16_t`) only needs 2-byte alignment,
 which it already has at offset 2, so it has zero padding.
 
@@ -356,7 +458,7 @@ on. It has since gained one new payload, `UART_PINSETTER_STATUS` (added
 added so the Pi's game state machine has a real `STATUS_CYCLE_COMPLETE`
 signal instead of guessing off a fixed timeout after sending
 `CMD_CYCLE`/`CMD_RERACK`. As of 2026-08-07 this payload also carries
-`ballNumber` (`statusCode`, `laneNumber`, `ballNumber`, `timestampMs`) --
+`ballNumber` (`statusCode`, `laneSide`, `ballNumber`, `timestampMs`) --
 the pinsetter's own reported ball, extracted from `MachineRecord` (see
 `MSG_STATUS` above) -- so the Pi can decide rerack cycle counts itself
 instead of the pinsetter deriving them locally (see `state_machine.py`'s

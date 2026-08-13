@@ -2,21 +2,31 @@
 // openlanelink -- PINSETTER INTERFACE NODE
 // Waveshare ESP32-S3-(POE-)ETH-8DI-8RO
 //
-// Controls up to two Brunswick A2 pinsetters (one lane pair). Each machine
+// Controls the two Brunswick A2 pinsetters of ONE LANE PAIR. Each machine
 // uses TWO relays: a pulse-only CYCLE relay (fires the cycle solenoid) and a
-// latching POWER relay (machine mains). 2 machines = 4 relays; the 8RO board
-// covers two lane pairs (4 relays).
+// latching POWER relay (machine mains). 2 machines = 4 relays.
 //
 // THIS NODE owns the machine config (MACHINES[] below) and per-machine state.
-// The gateway sends pure semantic MSG_COMMAND{code=CommandCode, laneNumber}:
+// The gateway sends pure semantic MSG_COMMAND{code=CommandCode, laneSide}:
 //   CMD_CYCLE     -- fire the cycle solenoid once, regardless of ball
-//   CMD_RERACK    -- cycle through to a fresh full rack: on 2nd ball one cycle,
-//                    on 1st ball two cycles (sequenced a machine-cycle apart).
-//                    The gateway sends this on foul events.
+//   CMD_RERACK    -- cycle through to a fresh full rack: runs exactly the
+//                    cycleCount the Pi decided (see execRerack()).
 //   CMD_RESPOT    -- STUB, not implemented: stop at 180 waiting for pins on 2nd
 //                    ball; needs manual intervention. Logged + acked only.
 //   CMD_POWER_ON / CMD_POWER_OFF -- latch the machine's power relay
 //   CMD_STATUS    -- report per-machine {ball, on, cycling, cooldown} via MSG_STATUS
+//
+// THIS SKETCH IS LANE-NUMBER-FREE, and identical on every lane pair in the
+// house. Machines are addressed by which SIDE of the pair they sit on
+// (LaneSide::A / LaneSide::B), never by lane number -- resolving side -> real
+// lane number is the Pi's job (uart_bridge/lane_map.py). gatewayMac is the
+// only per-pair constant left in this file.
+//
+// CONSEQUENCE: the 8RO board's channels 5-8 are spare, NOT "a second lane
+// pair". They used to be commented-in-waiting as lanes 9/10, but a lane pair
+// is defined by its gateway -- one gateway, one mesh, one ESP-NOW
+// registration, two sides. A second pair needs its own gateway and its own
+// pinsetter node; it cannot be a third and fourth machine on this one.
 //
 // Ball tracking (1st/2nd) is a FIRMWARE COUNTER: each completed machine
 // cycle toggles it. It desyncs if someone cycles the machine from its local
@@ -35,12 +45,17 @@
 // MSG_COMMAND/MSG_STATUS/MSG_ACK are sent on BOTH transports, always,
 // unconditionally (always-on redundancy, not failure-detect-then-failover).
 // A single ack/retry table is satisfied by an ack arriving on EITHER
-// transport. MSG_REGISTER stays ESP-NOW-only -- RS485 is a hardwired
-// point-to-point link with no discovery concept, so there's nothing to
-// register. See firmware/PROTOCOL.md for the canonical reference.
+// transport. MSG_REGISTER stays ESP-NOW-only -- RS485 has no discovery
+// concept, so there's nothing to register. See firmware/PROTOCOL.md, and
+// the shared `lanelink` Arduino library (firmware/lib/lanelink, installed
+// via firmware/tools/install_lanelink_library.ps1 (Windows) or .sh) for the canonical
+// struct/enums -- one definition for every node, nothing to keep in sync.
 // ============================================================
 
 #include <Wire.h>
+
+#include <lanelink_protocol.h>
+#include <lanelink_rs485.h>
 
 // --- Relay driver (confirmed: TCA9554 @ 0x20, SDA=42, SCL=41) ---
 #define SDA_PIN 42
@@ -53,22 +68,23 @@
 
 // ---- Machine (Brunswick A2) config -- THIS node owns the mapping ----
 // TODO(HANDOFF.md "Next" item 9): this compile-time mapping (and whatever
-// DI/optocoupler-to-lane mapping eventually joins it) should move to the
-// software (Pi) side so reassigning a relay/DI channel to a lane is a
+// DI/optocoupler-to-side mapping eventually joins it) should move to the
+// software (Pi) side so reassigning a relay/DI channel to a side is a
 // config change, not a firmware edit+reflash. Not yet designed -- see that
-// item for why this isn't a trivial move (it changes who owns lane->channel
-// resolution, not just where the array lives).
+// item for why this isn't a trivial move (it changes who owns side->channel
+// resolution, not just where the array lives). Note that the A/B-side
+// rename already removed the *other* reason this array used to need editing
+// per installation: it no longer carries lane numbers.
 struct MachineConfig {
-  uint8_t laneNumber;
+  LaneSide laneSide;
   uint8_t cycleRelay;   // pulse-only: fires the cycle solenoid
   uint8_t powerRelay;   // latching: machine mains power
 };
 
+// Channels 5-8 are spare, not a second pair -- see the header comment.
 const MachineConfig MACHINES[] = {
-  {7, 1, 2},
-  {8, 3, 4},
-  // {9,  5, 6},   // second lane pair, when wired
-  // {10, 7, 8},
+  {LaneSide::A, 1, 2},
+  {LaneSide::B, 3, 4},
 };
 const int MACHINE_COUNT = sizeof(MACHINES) / sizeof(MACHINES[0]);
 
@@ -90,14 +106,12 @@ uint8_t pulseOnlyMask = 0;
 #define DI_INPUT_REG  0x00
 
 // --- RS485 (UNVERIFIED -- confirm TX/RX against silkscreen). Wired fallback
-// to the gateway -- see PROTOCOL.md. Baud MUST match the gateway's. ---
+// to the gateway -- see PROTOCOL.md. Baud MUST match the gateway's. Bus
+// timing/framing lives in lanelink_rs485.h; only this board's wiring is here. ---
 #define RS485_ENABLED 1
 #define RS485_TX_PIN  17     // placeholder, verify
 #define RS485_RX_PIN  18     // placeholder, verify
 #define RS485_BAUD    9600
-#define RS485_IDLE_MS       15
-#define RS485_JITTER_MAX_MS 20
-#define RS485_MAX_QUEUE     8
 
 // --- Ethernet (confirmed) ---
 #define ETH_ENABLED 1
@@ -118,6 +132,8 @@ const char* password = "";
 const char* otaPassword = "";  // set a real one
 
 // --- Node identity / gateway ---
+// The one per-pair constant in this sketch. NODE_ID is a human label for
+// logs only; nothing on the wire carries it.
 #define NODE_ID "pinsetter-01"
 uint8_t gatewayMac[] = {0x68, 0x25, 0xDD, 0x32, 0x64, 0x7C};
 
@@ -141,48 +157,6 @@ uint8_t gatewayMac[] = {0x68, 0x25, 0xDD, 0x32, 0x64, 0x7C};
 #define ACK_TIMEOUT_MS   300
 #define ACK_MAX_RETRIES  3
 #define PENDING_MAX      8
-
-// ============================================================
-// Wire protocol -- see firmware/PROTOCOL.md. MUST match every other node.
-// ============================================================
-
-enum MsgType : uint8_t {
-  MSG_REGISTER = 0, MSG_LANE_EVENT = 1, MSG_BEAM_EVENT = 2,
-  MSG_COMMAND = 3, MSG_STATUS = 4, MSG_SCORE_EVENT = 5, MSG_ACK = 6,
-};
-
-enum NodeType : uint8_t {
-  NODE_FOULING = 0, NODE_PINSETTER = 1, NODE_SCORING = 2, NODE_SPEED = 3,
-  NODE_BALL_DETECT = 4,
-};
-
-enum CommandCode : uint8_t {
-  CMD_CYCLE = 0, CMD_POWER_ON = 1, CMD_POWER_OFF = 2,
-  CMD_RERACK = 3, CMD_RESPOT = 4, CMD_STATUS = 5,
-};
-
-enum StatusCode : uint8_t {
-  STATUS_RELAY_ACK = 0, STATUS_PULSE_ACK = 1, STATUS_PULSE_COMPLETE = 2,
-  STATUS_ALL_ACK = 3, STATUS_RELAY_FAULT = 4, STATUS_REFUSED_PULSE_ONLY = 5,
-  STATUS_MACHINE_STATUS = 6, STATUS_RESPOT_STUB = 7, STATUS_DI_CHANGE = 8,
-  STATUS_HEARTBEAT = 9, STATUS_CYCLE_COMPLETE = 10,
-};
-
-#define MAX_MACHINES_PER_MSG 4
-
-struct NodeMessage {
-  uint8_t msgType;
-  uint8_t seq;
-  uint8_t code;
-  uint8_t laneNumber;
-  uint32_t timestampMs;
-  uint8_t data[64];
-};   // sizeof = 72 bytes, fixed, no padding (see PROTOCOL.md)
-
-// RS485 frame: [0xAA START][LEN][PAYLOAD = raw NodeMessage bytes][CHECKSUM].
-// No message-type wrapper byte -- msgType is already NodeMessage's first field.
-#define RS485_FRAME_START 0xAA
-#define RS485_FRAME_SIZE (sizeof(NodeMessage) + 3)   // 1 start + 1 len + payload + 1 checksum
 
 // ---- Per-machine state (parallel to MACHINES[]) ----
 struct MachineState {
@@ -217,31 +191,28 @@ SPIClass ethSPI(HSPI);
 bool ethConnected = false;
 #endif
 
-HardwareSerial RS485(1);
+HardwareSerial RS485Port(1);
+Rs485Link rs485(RS485Port, RS485_ENABLED);
 
 uint8_t relayState = 0x00;
 unsigned long pulseEndTime[8] = {0};
 uint8_t diState = 0x00;
 
-// The gateway dual-sends every MSG_COMMAND on both ESP-NOW and RS485,
-// unconditionally, so it can survive either transport failing (see
-// PROTOCOL.md's "Dual-send" section) -- both copies carry the SAME seq.
-// When both transports are actually up, this node would otherwise execute
-// the same command twice (e.g. a double pinsetter cycle per foul). Track
-// the last-processed command seq and skip an immediate repeat.
-uint8_t lastCommandSeq = 0;
-bool haveLastCommandSeq = false;
+// The gateway dual-sends every MSG_COMMAND and MSG_ACK on both ESP-NOW and
+// RS485, unconditionally, so the command survives either transport failing
+// (see PROTOCOL.md's "Dual-send") -- both copies are byte-identical. With
+// both transports actually up this node would otherwise execute every
+// command twice: a double pinsetter cycle per foul.
+//
+// This replaced a single-slot "was that the last seq I saw" check, which
+// caught the common back-to-back pair but not interleaved delivery --
+// espnow(A), espnow(B), rs485(A) left A looking new again and re-ran it. The
+// ring keys on the whole message, so ordering doesn't matter.
+DualSendFilter dedupe;
 
 unsigned long lastHeartbeat = 0;
 unsigned long lastRegisterAttempt = 0;
 uint8_t lastSentDiState = 0xFF;
-
-// ---- RS485 outbound queue (collision avoidance -- half-duplex bus) ----
-uint8_t rs485Queue[RS485_MAX_QUEUE][RS485_FRAME_SIZE];
-uint8_t rs485QueueLen[RS485_MAX_QUEUE];
-int rs485QueueHead = 0, rs485QueueTail = 0, rs485QueueCount = 0;
-unsigned long lastRS485Activity = 0;
-unsigned long rs485NextAttempt = 0;
 
 // ---- Ack/retry tracking (shared across both transports) ----
 struct PendingMsg {
@@ -271,88 +242,35 @@ uint8_t relayReadback() {
   return 0xFF; // read failure sentinel
 }
 
-// ---- StatusCode -> human-readable name, for Serial logging only ----
-const char *statusCodeName(uint8_t code) {
-  switch (code) {
-    case STATUS_RELAY_ACK:          return "RELAY_ACK";
-    case STATUS_PULSE_ACK:          return "PULSE_ACK";
-    case STATUS_PULSE_COMPLETE:     return "PULSE_COMPLETE";
-    case STATUS_ALL_ACK:            return "ALL_ACK";
-    case STATUS_RELAY_FAULT:        return "RELAY_FAULT";
-    case STATUS_REFUSED_PULSE_ONLY: return "REFUSED_PULSE_ONLY";
-    case STATUS_MACHINE_STATUS:     return "MACHINE_STATUS";
-    case STATUS_RESPOT_STUB:        return "RESPOT_STUB";
-    case STATUS_DI_CHANGE:          return "DI_CHANGE";
-    case STATUS_HEARTBEAT:          return "HEARTBEAT";
-    case STATUS_CYCLE_COMPLETE:     return "CYCLE_COMPLETE";
-    default:                        return "UNKNOWN";
-  }
-}
-
-// ---- RS485 (wired fallback) -- same framing as gateway_node.ino ----
-uint8_t rs485Checksum(uint8_t len, const uint8_t *payload) {
-  uint8_t sum = len;
-  for (uint8_t i = 0; i < len; i++) sum ^= payload[i];
-  return sum;
-}
-
-void rs485Enqueue(const NodeMessage &msg) {
-  if (!RS485_ENABLED) return;
-  if (rs485QueueCount >= RS485_MAX_QUEUE) {
-    rs485QueueHead = (rs485QueueHead + 1) % RS485_MAX_QUEUE;
-    rs485QueueCount--;
-  }
-  uint8_t *frame = rs485Queue[rs485QueueTail];
-  frame[0] = RS485_FRAME_START;
-  frame[1] = sizeof(NodeMessage);
-  memcpy(frame + 2, &msg, sizeof(NodeMessage));
-  frame[2 + sizeof(NodeMessage)] = rs485Checksum(sizeof(NodeMessage), frame + 2);
-  rs485QueueLen[rs485QueueTail] = RS485_FRAME_SIZE;
-
-  rs485QueueTail = (rs485QueueTail + 1) % RS485_MAX_QUEUE;
-  rs485QueueCount++;
-}
-
-void processRS485Queue() {
-  if (rs485QueueCount == 0) return;
-  unsigned long now = millis();
-  bool idle = (now - lastRS485Activity) > RS485_IDLE_MS;
-  if (idle && now >= rs485NextAttempt) {
-    RS485.write(rs485Queue[rs485QueueHead], rs485QueueLen[rs485QueueHead]);
-    lastRS485Activity = now;
-    rs485QueueHead = (rs485QueueHead + 1) % RS485_MAX_QUEUE;
-    rs485QueueCount--;
-  } else if (!idle) {
-    rs485NextAttempt = now + RS485_IDLE_MS + random(0, RS485_JITTER_MAX_MS);
-  }
-}
-
 bool isPoweredOn(int mi) {
   return (relayState >> (MACHINES[mi].powerRelay - 1)) & 0x01;
 }
 
 // ---- MSG_STATUS -- dual-sent on ESP-NOW + RS485, ack/retry-tracked ----
-uint8_t laneForRelayChannel(int ch) {
+LaneSide sideForRelayChannel(int ch) {
   for (int i = 0; i < MACHINE_COUNT; i++) {
     if (MACHINES[i].cycleRelay == ch || MACHINES[i].powerRelay == ch) {
-      return MACHINES[i].laneNumber;
+      return MACHINES[i].laneSide;
     }
   }
-  return 0;
+  return LaneSide::NONE;
 }
 
-void sendStatusEvent(StatusCode code, uint8_t laneNumber) {
+void sendStatusEvent(StatusCode code, LaneSide side) {
   uint8_t seq = nextSeq++;
 
   NodeMessage msg = {};
   msg.msgType = MSG_STATUS;
   msg.seq = seq;
   msg.code = code;
-  msg.laneNumber = laneNumber;
+  msg.laneSide = side;
   msg.timestampMs = millis();
   msg.data[0] = relayState;
   msg.data[1] = diState;
 
+  // Every MSG_STATUS carries EVERY machine's record regardless of `code`, so
+  // the gateway/Pi always has fresh per-machine data no matter which
+  // StatusCode triggered this message. See lanelink_protocol.h.
   unsigned long now = millis();
   int n = 0;
   for (int i = 0; i < MACHINE_COUNT && n < MAX_MACHINES_PER_MSG; i++, n++) {
@@ -360,13 +278,13 @@ void sendStatusEvent(StatusCode code, uint8_t laneNumber) {
     uint16_t cooldownMs = (m.cycleInProgress && m.busyUntil > now)
                               ? (uint16_t)(m.busyUntil - now) : 0;
     uint8_t flags = 0;
-    if (isPoweredOn(i))    flags |= 0x01;
-    if (m.cycleInProgress) flags |= 0x02;
-    if (m.ball == 2)       flags |= 0x04;
-    flags |= (uint8_t)((m.pendingCycles & 0x03) << 3);
+    if (isPoweredOn(i))    flags |= MACHINE_FLAG_ON;
+    if (m.cycleInProgress) flags |= MACHINE_FLAG_CYCLING;
+    if (m.ball == 2)       flags |= MACHINE_FLAG_BALL2;
+    flags |= (uint8_t)((m.pendingCycles & MACHINE_PENDING_MASK) << MACHINE_PENDING_SHIFT);
 
-    int off = 2 + n * 4;
-    msg.data[off + 0] = MACHINES[i].laneNumber;
+    int off = machineRecordOffset(n);
+    msg.data[off + 0] = (uint8_t)MACHINES[i].laneSide;
     msg.data[off + 1] = flags;
     msg.data[off + 2] = (uint8_t)(cooldownMs & 0xFF);
     msg.data[off + 3] = (uint8_t)(cooldownMs >> 8);
@@ -381,7 +299,7 @@ void sendStatusEvent(StatusCode code, uint8_t laneNumber) {
   pending[slot] = { seq, msg, millis(), 0, true };
 
   esp_now_send(gatewayMac, (uint8_t *)&msg, sizeof(msg));
-  rs485Enqueue(msg);
+  rs485.enqueue(msg);
 }
 
 void processRetries() {
@@ -398,7 +316,7 @@ void processRetries() {
       pending[i].retries++;
       pending[i].lastSentTime = now;
       esp_now_send(gatewayMac, (uint8_t *)&pending[i].msg, sizeof(pending[i].msg));
-      rs485Enqueue(pending[i].msg);
+      rs485.enqueue(pending[i].msg);
     }
   }
 }
@@ -427,7 +345,7 @@ void sendRegister() {
   NodeMessage msg = {};
   msg.msgType = MSG_REGISTER;
   msg.code = NODE_PINSETTER;
-  msg.laneNumber = 0;
+  msg.laneSide = LaneSide::NONE;   // registration is node-level, not per-side
   msg.timestampMs = millis();
   esp_now_send(gatewayMac, (uint8_t *)&msg, sizeof(msg));
   Serial.println("Sent REGISTER to gateway");
@@ -445,7 +363,7 @@ bool applyState() {
     Serial.println(attempt + 1);
   }
   Serial.println("Relay write FAILED after retries -- hardware fault");
-  sendStatusEvent(STATUS_RELAY_FAULT, 0);
+  sendStatusEvent(STATUS_RELAY_FAULT, LaneSide::NONE);
   return false;
 }
 
@@ -462,7 +380,7 @@ void execToggle(int ch, bool on) {
     Serial.print("REFUSED: ch ");
     Serial.print(ch);
     Serial.println(" is pulse-only (cycle solenoid), cannot be latched on");
-    sendStatusEvent(STATUS_REFUSED_PULSE_ONLY, laneForRelayChannel(ch));
+    sendStatusEvent(STATUS_REFUSED_PULSE_ONLY, sideForRelayChannel(ch));
     return;
   }
 
@@ -472,7 +390,7 @@ void execToggle(int ch, bool on) {
   else    relayState &= ~(1 << (ch - 1));
 
   if (applyState()) {
-    sendStatusEvent(STATUS_RELAY_ACK, laneForRelayChannel(ch));
+    sendStatusEvent(STATUS_RELAY_ACK, sideForRelayChannel(ch));
   } else {
     relayState = prevState;
     pulseEndTime[ch - 1] = 0;
@@ -486,7 +404,7 @@ void execPulse(int ch, unsigned long ms) {
 
   if (applyState()) {
     pulseEndTime[ch - 1] = millis() + ms;
-    sendStatusEvent(STATUS_PULSE_ACK, laneForRelayChannel(ch));
+    sendStatusEvent(STATUS_PULSE_ACK, sideForRelayChannel(ch));
   } else {
     relayState = prevState;
   }
@@ -502,7 +420,7 @@ void execAll(bool on) {
   relayState = on ? (uint8_t)(0xFF & ~pulseOnlyMask) : 0x00;
 
   if (applyState()) {
-    sendStatusEvent(STATUS_ALL_ACK, 0);
+    sendStatusEvent(STATUS_ALL_ACK, LaneSide::NONE);
   } else {
     relayState = prevState;
     memcpy(pulseEndTime, prevPulses, sizeof(pulseEndTime));
@@ -518,7 +436,7 @@ void checkPulses() {
 
       if (applyState()) {
         pulseEndTime[i] = 0;
-        sendStatusEvent(STATUS_PULSE_COMPLETE, laneForRelayChannel(i + 1));
+        sendStatusEvent(STATUS_PULSE_COMPLETE, sideForRelayChannel(i + 1));
       } else {
         relayState = prevState; // retry next loop pass
       }
@@ -527,9 +445,10 @@ void checkPulses() {
 }
 
 // ---- A2 machine sequencing ----
-int machineIndexForLane(uint8_t laneNumber) {
+int machineIndexForSide(LaneSide side) {
+  if (side == LaneSide::NONE) return -1;   // node-level, not a machine
   for (int i = 0; i < MACHINE_COUNT; i++) {
-    if (MACHINES[i].laneNumber == laneNumber) return i;
+    if (MACHINES[i].laneSide == side) return i;
   }
   return -1;
 }
@@ -554,8 +473,8 @@ void requestCycles(int mi, uint8_t n) {
 void execRerack(int mi, uint8_t cycleCount) {
   MachineState &m = machineState[mi];
   if (m.cycleInProgress || m.pendingCycles > 0) {
-    Serial.print("Re-rack ignored, lane ");
-    Serial.print(MACHINES[mi].laneNumber);
+    Serial.print("Re-rack ignored, side ");
+    Serial.print(laneSideName(MACHINES[mi].laneSide));
     Serial.println(" is already cycling/queued");
     return;
   }
@@ -574,7 +493,7 @@ void processMachines() {
     if (m.cycleInProgress && now >= m.busyUntil) {
       m.cycleInProgress = false;
       m.ball = (m.ball == 1) ? 2 : 1;  // 2nd-ball cycle spots a fresh rack
-      sendStatusEvent(STATUS_CYCLE_COMPLETE, MACHINES[i].laneNumber);
+      sendStatusEvent(STATUS_CYCLE_COMPLETE, MACHINES[i].laneSide);
     }
 
     if (!m.cycleInProgress && m.pendingCycles > 0) {
@@ -591,28 +510,20 @@ void execPinsetterCommand(const NodeMessage &msg) {
   Serial.print("[");
   Serial.print(millis());
   Serial.print(" ms] RECV MSG_COMMAND { code=");
-  switch (msg.code) {
-    case CMD_CYCLE:     Serial.print("CYCLE"); break;
-    case CMD_POWER_ON:  Serial.print("POWER_ON"); break;
-    case CMD_POWER_OFF: Serial.print("POWER_OFF"); break;
-    case CMD_RERACK:    Serial.print("RERACK"); break;
-    case CMD_RESPOT:    Serial.print("RESPOT"); break;
-    case CMD_STATUS:    Serial.print("STATUS"); break;
-    default:            Serial.print("UNKNOWN"); break;
-  }
-  Serial.print(", lane=");
-  Serial.print(msg.laneNumber);
+  Serial.print(commandCodeName(msg.code));
+  Serial.print(", side=");
+  Serial.print(laneSideName(msg.laneSide));
   Serial.println(" }");
 
   if (msg.code == CMD_STATUS) {
-    sendStatusEvent(STATUS_MACHINE_STATUS, 0);
+    sendStatusEvent(STATUS_MACHINE_STATUS, LaneSide::NONE);
     return;
   }
 
-  int mi = machineIndexForLane(msg.laneNumber);
+  int mi = machineIndexForSide(msg.laneSide);
   if (mi < 0) {
-    Serial.print("No machine configured for lane ");
-    Serial.println(msg.laneNumber);
+    Serial.print("No machine configured for side ");
+    Serial.println(laneSideName(msg.laneSide));
     return;
   }
 
@@ -626,7 +537,7 @@ void execPinsetterCommand(const NodeMessage &msg) {
     case CMD_RESPOT:
       // STUB: stop at 180 waiting for pins on 2nd ball, manual completion.
       Serial.println("RESPOT is a stub -- not implemented yet");
-      sendStatusEvent(STATUS_RESPOT_STUB, MACHINES[mi].laneNumber);
+      sendStatusEvent(STATUS_RESPOT_STUB, MACHINES[mi].laneSide);
       break;
     case CMD_POWER_ON:
       execToggle(MACHINES[mi].powerRelay, true);
@@ -644,72 +555,55 @@ void execPinsetterCommand(const NodeMessage &msg) {
 // "Messages between nodes stay uniform, regardless of transport." Whether a
 // NodeMessage arrived over ESP-NOW or RS485, it's handled identically here.
 void handleIncomingNodeMessage(const NodeMessage &msg, const char *via) {
+  // Checked before the dispatch below, and spanning both transports, because
+  // the duplicate arrives on the OTHER wire from the original -- see
+  // dedupe's declaration above.
+  if (dedupe.seenBefore(msg)) {
+    Serial.print("Duplicate ");
+    Serial.print(msgTypeName(msg.msgType));
+    Serial.print(" (seq=");
+    Serial.print(msg.seq);
+    Serial.print(") via ");
+    Serial.print(via);
+    Serial.println(" -- already handled via the other transport, skipped");
+    return;
+  }
+
   switch (msg.msgType) {
     case MSG_COMMAND:
-      // Same seq as the last command we ran == the other transport's copy
-      // of the message we already executed, not a new command -- see
-      // lastCommandSeq's declaration above.
-      if (haveLastCommandSeq && msg.seq == lastCommandSeq) {
-        Serial.print("Duplicate MSG_COMMAND (seq=");
-        Serial.print(msg.seq);
-        Serial.print(") via ");
-        Serial.print(via);
-        Serial.println(", already executed via the other transport -- skipped");
-        break;
-      }
-      lastCommandSeq = msg.seq;
-      haveLastCommandSeq = true;
       execPinsetterCommand(msg);
       break;
     case MSG_ACK:
       if (msg.code == MSG_STATUS) handleIncomingAck(msg.seq);
       break;
+
+    // Bus traffic this node has no part in, ignored SILENTLY and on purpose.
+    // RS485 is one shared multi-drop bus, so every fouling/speed/ball-detect
+    // event reaches this board too, and MSG_SCORE_EVENT arrives on both the
+    // ESP-NOW broadcast address and the bus. Letting these fall through to
+    // the default case below printed a line per beam break, per foul, and
+    // per ball, forever -- drowning the log this node's real faults appear
+    // in. `default` stays reserved for a genuinely unrecognized msgType,
+    // which IS worth seeing.
+    case MSG_LANE_EVENT:
+    case MSG_BEAM_EVENT:
+    case MSG_SCORE_EVENT:
+      break;
+
     default:
       Serial.print("Unexpected msgType via ");
       Serial.print(via);
       Serial.print(": ");
-      Serial.println(msg.msgType);
+      Serial.println(msgTypeName(msg.msgType));
       break;
   }
 }
 
-// ---- RS485 poll (carrier-sense tracking + inbound framing) ----
-void pollRS485() {
-  static uint8_t buf[sizeof(NodeMessage)];
-  static uint8_t bufLen = 0;
-  static uint8_t expectedLen = 0;
-  static bool haveLen = false;
-  static bool sawStart = false;
-
-  while (RS485.available()) {
-    lastRS485Activity = millis();
-    uint8_t b = RS485.read();
-
-    if (!sawStart) {
-      if (b == RS485_FRAME_START) { sawStart = true; haveLen = false; bufLen = 0; }
-      continue;
-    }
-    if (!haveLen) {
-      expectedLen = b;
-      haveLen = true;
-      bufLen = 0;
-      if (expectedLen != sizeof(NodeMessage)) { sawStart = false; }
-      continue;
-    }
-    if (bufLen < expectedLen) {
-      buf[bufLen++] = b;
-      continue;
-    }
-
-    if (b == rs485Checksum(expectedLen, buf)) {
-      NodeMessage msg;
-      memcpy(&msg, buf, sizeof(msg));
-      handleIncomingNodeMessage(msg, "RS485");
-    } else {
-      Serial.println("RS485 checksum mismatch, dropping frame");
-    }
-    sawStart = false;
-  }
+// Rs485Link::poll() hands verified frames here; the transport label is fixed
+// because anything arriving on this port came off the RS485 bus by
+// definition.
+void onRs485Message(const NodeMessage &msg) {
+  handleIncomingNodeMessage(msg, "RS485");
 }
 
 // ---- ESP-NOW receive ----
@@ -747,14 +641,14 @@ void setup() {
   randomSeed(esp_random());
 
   Serial.println();
-  Serial.println("Pinsetter interface node starting");
+  Serial.println("Pinsetter interface node starting (" NODE_ID ")");
 
   // Build the pulse-only guard mask and init per-machine state.
   for (int i = 0; i < MACHINE_COUNT; i++) {
     pulseOnlyMask |= (1 << (MACHINES[i].cycleRelay - 1));
     machineState[i] = {1, 0, false, 0};  // assume 1st ball at boot
-    Serial.print("Machine: lane ");
-    Serial.print(MACHINES[i].laneNumber);
+    Serial.print("Machine: side ");
+    Serial.print(laneSideName(MACHINES[i].laneSide));
     Serial.print(" cycle=ch");
     Serial.print(MACHINES[i].cycleRelay);
     Serial.print(" power=ch");
@@ -770,10 +664,8 @@ void setup() {
   Wire.write(0xFF); // all 8 pins input
   Wire.endTransmission();
 
-  if (RS485_ENABLED) {
-    RS485.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-    Serial.println("RS485 fallback link up");
-  }
+  rs485.begin(RS485_BAUD, RS485_RX_PIN, RS485_TX_PIN);
+  if (rs485.enabled()) Serial.println("RS485 fallback link up");
 
   // Radio up front, power save OFF unconditionally -- modem sleep makes
   // ESP-NOW receivers silently miss packets.
@@ -874,15 +766,15 @@ void loop() {
   ArduinoOTA.handle();
   checkPulses();
   processMachines();
-  pollRS485();
-  processRS485Queue();
+  rs485.poll(onRs485Message);
+  rs485.processQueue();
   processRetries();
 
   static unsigned long lastDiPoll = 0;
   if (millis() - lastDiPoll > 100) {
     diState = diRead();
     if (diState != lastSentDiState) {
-      sendStatusEvent(STATUS_DI_CHANGE, 0);
+      sendStatusEvent(STATUS_DI_CHANGE, LaneSide::NONE);
       lastSentDiState = diState;
     }
     lastDiPoll = millis();
@@ -896,7 +788,7 @@ void loop() {
   }
 
   if (millis() - lastHeartbeat > HEARTBEAT_INTERVAL_MS) {
-    sendStatusEvent(STATUS_HEARTBEAT, 0);
+    sendStatusEvent(STATUS_HEARTBEAT, LaneSide::NONE);
     lastHeartbeat = millis();
   }
 }

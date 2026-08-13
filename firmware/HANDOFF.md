@@ -4,17 +4,32 @@ Bowling-lane automation on ESP32 boards talking over ESP-NOW.
 
 ## Sketch layout
 Arduino IDE requires each sketch in its own folder matching the `.ino` filename:
-- `firmware/break_beam_test/break_beam_test.ino` — fouling node
+- `firmware/foul_node/foul_node.ino` — fouling node
 - `firmware/gateway_node/gateway_node.ino` — gateway
 - `firmware/pinsetter_node/pinsetter_node.ino` — pinsetter interface
 - `firmware/speed_node/speed_node.ino` — ball-speed node
 - `firmware/ball_detect_node/ball_detect_node.ino` — ball-at-the-pins detection node
-- `firmware/mac_finder/mac_finder.ino` — prints a board's MAC over serial
+- `firmware/utility/mac_finder/mac_finder.ino` — prints a board's MAC over serial
+- `firmware/lib/lanelink/` — the shared wire-protocol + RS485 library every
+  sketch includes (not a sketch itself; install with
+  `firmware/tools/install_lanelink_library.ps1` on Windows, `.sh` elsewhere)
 
 ## Design principles
-**Every node hardcodes a lane preset (current approach, not a permanent rule).**
-Every ESP-NOW node currently hardcodes its target gateway's MAC (`GATEWAY_MAC`)
-and its own lane number(s) at compile time. A real installation has many
+**No node has a lane number; every node hardcodes only its gateway's MAC.**
+Nodes address the two **sides** of their gateway's lane pair (`LaneSide::A` /
+`LaneSide::B`), never lane numbers — a gateway's mesh *is* one lane pair, so a
+lane number tells the mesh nothing it can act on. Every fouling, speed, ball
+detection, and pinsetter sketch is consequently byte-identical on every pair
+in the house, and side → real lane number is resolved once in software
+(`uart_bridge/lane_map.py`, `LANE_SIDE_A`/`LANE_SIDE_B`). This replaced
+per-node hardcoded lane numbers (`LANE_NUMBER[] = {7, 8}`, `MACHINES[]` rows
+carrying lanes), which had to be edited and reflashed per pair and could
+silently disagree with what the Pi believed. See `PROTOCOL.md`'s "Lane sides,
+not lane numbers".
+
+**`GATEWAY_MAC` is still hardcoded (current approach, not a permanent rule).**
+Every ESP-NOW node hardcodes its target gateway's MAC at
+compile time. A real installation has many
 lane-pair meshes side by side, all sharing ESP-NOW channel 1. On a full-house
 power outage every pair's nodes reboot at once; naive same-network discovery
 could let a node from one pair mis-register with a neighboring pair's gateway
@@ -57,7 +72,7 @@ applies (`MSG_STATUS`), a single table is satisfied by whichever transport
 an ack arrives on first.
 
 ## System architecture
-- **Fouling (break-beam) node** — covers *two lanes*, one sensor each: GPIO17 = lane 7, GPIO19 = lane 8. Sends per-lane FOUL/CLEAR to the gateway, dual-sent on ESP-NOW and RS485. Shared local buzzer if either lane is blocked.
+- **Fouling (break-beam) node** — covers *one lane pair*, one sensor per side: GPIO17 = side A, GPIO19 = side B. Sends per-side FOUL/CLEAR to the gateway, dual-sent on ESP-NOW and RS485. Shared local buzzer if either side is blocked.
 - **Gateway node** — learns downstream nodes via dynamic registration (no hardcoded MACs). The **pinsetter node**, not the gateway, owns the lane → relay-channel mapping (see `PROTOCOL.md`). On FOUL: just forwards the raw `MSG_LANE_EVENT` to the Pi, same as CLEAR — it no longer decides to RERACK itself (that used to happen here, off a local per-lane cooldown timer, independent of real game state; removed 2026-08-07, see `state_machine/state_machine.py`'s `on_foul()`/`FOUL_COOLDOWN_S`, which now owns both the debounce and the rerack decision). (There is no gateway→scoring command anymore — see `PROTOCOL.md`'s note on `CMD_FOUL`/`ScoringCommand` being removed, not just superseded.) Also the shared endpoint every node's RS485 fallback traffic terminates at.
 - **Speed node** — covers *one lane pair*, two break-beams per lane (4 sensors total). Does NOT time anything itself — emits a raw `MSG_BEAM_EVENT` (BROKEN/CLEAR, tagged upstream/downstream) per sensor edge, dual-sent on ESP-NOW and RS485, same as the fouling node emits per-lane FOUL/CLEAR. The gateway forwards these to the Pi as-is; pairing the two timestamps into an interval and computing speed is the Pi bridge's job (event timing/scheduling lives off-node — see "Design principle" above and the UART bridge section below).
 - **Ball detection node** — covers *two lanes*, one break-beam each, sited just **before the pin deck**. Announces "the ball arrived at the pins on lane N" — the edge that kicks off vision capture → scoring → pinsetter cycle on the Pi. Emits the same `MSG_BEAM_EVENT` the speed node does, tagged `data[0] = ROLE_BALL_DETECT` (2) rather than `ROLE_DOWNSTREAM` (1); see `PROTOCOL.md` for why that distinction is load-bearing (a ball-detect edge wearing role 1 would get eaten by the Pi's speed pairing and produce a fabricated mph). Does no counting, timing, or correlation of its own — same pure-emitter shape as the fouling and speed nodes. Independent of the speed node in both directions: either can run alone on a lane, and a lane with both just produces a duplicate trigger that vision's in-flight guard absorbs.
@@ -87,7 +102,7 @@ ESP32 30-pin devkit; 2x Baomain E3F-R2NK retroreflective break-beams (NPN, norma
 | Sensor B (black/OUT) | 19 | 8 |
 | Buzzer (+) | 4 | (both, shared) |
 | RS485 TX | 16 | (fallback bus, placeholder — verify) |
-| RS485 RX | 18 | (unused — this node only transmits, placeholder — verify) |
+| RS485 RX | 18 | (**required** — read for bus carrier sense, placeholder — verify) |
 
 Beam clear = pin HIGH; beam broken = pin LOW. Both sensor pins use `INPUT_PULLUP`. Common ground: 12V supply GND, both sensors' blue wires, ESP32 GND, buzzer GND.
 
@@ -101,7 +116,7 @@ ESP32 devkit; 4x break-beam sensors (same Baomain E3F-R2NK style as the fouling 
 | Beam B-1 | 27 | 8 | upstream |
 | Beam B-2 | 32 | 8 | downstream |
 | RS485 TX | 16 | — | fallback bus, placeholder — verify |
-| RS485 RX | 18 | — | unused — this node only transmits, placeholder — verify |
+| RS485 RX | 18 | — | **required** — read for bus carrier sense, placeholder — verify |
 
 Same wiring convention as the fouling node (NPN open-collector, `INPUT_PULLUP`, beam clear = HIGH). Avoid GPIO34–39 for these (input-only, no internal pull-up). Emits a `NodeMessage` (`MSG_BEAM_EVENT`, BROKEN/CLEAR, tagged lane + upstream/downstream) on every debounced sensor edge, dual-sent on ESP-NOW and RS485 — no interval math, no timeout logic, no state machine on the node. The Pi pairs the two beams' timestamps into an interval and converts to mph using a configurable beam-spacing constant (`state_machine/speed.py`), so re-spacing the sensors doesn't require a reflash, and the timing/pairing logic itself lives in one place instead of being duplicated per node.
 
@@ -113,7 +128,7 @@ ESP32 30-pin devkit; 2x break-beam sensors (same Baomain E3F-R2NK style as the f
 | Sensor A (black/OUT) | 17 | 7 |
 | Sensor B (black/OUT) | 19 | 8 |
 | RS485 TX | 16 | (fallback bus, placeholder — verify) |
-| RS485 RX | 18 | (unused — this node only transmits, placeholder — verify) |
+| RS485 RX | 18 | (**required** — read for bus carrier sense, placeholder — verify) |
 
 Beam clear = pin HIGH; beam broken = pin LOW, `INPUT_PULLUP`, 30ms debounce — all the same as the fouling node. Emits `MSG_BEAM_EVENT` with `data[0] = ROLE_BALL_DETECT` (2) on every debounced edge, dual-sent on ESP-NOW and RS485. Registers as `NODE_BALL_DETECT` (4). No buzzer, no counting, no state machine — everything downstream of "a ball arrived" (settle delay, camera capture, scoring, cycling the pinsetter) happens on the Pi.
 
@@ -121,13 +136,17 @@ Beam clear = pin HIGH; beam broken = pin LOW, `INPUT_PULLUP`, 30ms debounce — 
 **Two relays per lane**: one pulse-only CYCLE relay + one latching POWER relay.
 So **2 lanes = 4 relays**; the 8RO board's 8 relays cover **two lane pairs (4 lanes)**.
 
-| Channel | Lane | Role |
+| Channel | Side | Role |
 |---|---|---|
-| 1 | 7 | CYCLE (pulse-only) |
-| 2 | 7 | POWER (on/off) |
-| 3 | 8 | CYCLE (pulse-only) |
-| 4 | 8 | POWER (on/off) |
-| 5–8 | 9/10 | spare, second lane pair |
+| 1 | A | CYCLE (pulse-only) |
+| 2 | A | POWER (on/off) |
+| 3 | B | CYCLE (pulse-only) |
+| 4 | B | POWER (on/off) |
+| 5–8 | — | spare (**not** a second pair — see below) |
+
+Channels 5–8 cannot serve a second lane pair. A pair is defined by its
+gateway (one mesh, one registration domain, two sides), so a second pair
+needs its own gateway *and* its own pinsetter node.
 
 Relay driver **confirmed**: TCA9554 @ `0x20`, SDA=42, SCL=41, config reg `0x03`, output reg `0x01`, readback reg `0x00`. Ethernet (W5500) confirmed: SCK 15, MISO 14, MOSI 13, CS 16, IRQ 12.
 **Unverified**: DI expander addr (`0x24` placeholder) and RS485 TX/RX pins (17/18 placeholder) — confirm with an I2C scanner / the silkscreen.
@@ -179,11 +198,11 @@ enum UartMsgType : uint8_t {
 real signal for `STATUS_CYCLE_COMPLETE` instead of guessing off a timeout —
 every `MSG_STATUS` the gateway receives (any `StatusCode`, not just cycle
 completion) is forwarded down, same "forward raw, let the Pi decide"
-pattern as lane/beam events. Originally only `statusCode`, `laneNumber`, and
+pattern as lane/beam events. Originally only `statusCode`, `laneSide`, and
 `timestampMs` crossed the wire; as of 2026-08-07 `ballNumber` also crosses
-(the pinsetter's own reported ball for `laneNumber`, extracted from the
+(the pinsetter's own reported ball for `laneSide`, extracted from the
 `MachineRecord` array in the original `MSG_STATUS`'s `data[2..17]` by
-`gateway_node.ino`'s `ballNumberForLane()`) so the Pi can decide rerack
+`gateway_node.ino`'s `ballForSide()`) so the Pi can decide rerack
 cycle counts itself -- see `UART_PINSETTER_COMMAND` below and
 `state_machine/state_machine.py`'s `_rerack_cycle_count()`. The rest of
 `MachineRecord` (relay/DI state beyond the ball bit) still isn't forwarded;
@@ -192,8 +211,8 @@ add it later if the Pi ever needs more than that.
 **Pi → Gateway** (commands/results the Pi emits):
 ```cpp
 enum UartMsgType : uint8_t {
-  UART_PINSETTER_COMMAND = 0x10,  // { command, laneNumber, cycleCount } -> gateway sends MSG_COMMAND{command, laneNumber, data[0]=cycleCount}
-  UART_SCORE_EVENT   = 0x11,  // { laneNumber, ballNumber, pinfallMask u16, timestampMs u32 }
+  UART_PINSETTER_COMMAND = 0x10,  // { command, laneSide, cycleCount } -> gateway sends MSG_COMMAND{command, laneSide, data[0]=cycleCount}
+  UART_SCORE_EVENT   = 0x11,  // { laneSide, ballNumber, pinfallMask u16, timestampMs u32 }
 };
 ```
 `UART_SCORE_EVENT` triggers the gateway to send the score onto ESP-NOW via the
@@ -252,8 +271,12 @@ unconditionally — always-on redundancy, not failure-detect-then-failover.
 peer/discovery concept. A single ack/retry table on the pinsetter tracks
 `MSG_STATUS` across both transports — an ack arriving via either one
 satisfies the same pending entry. The fouling and speed nodes only ever
-transmit on RS485 (matching their ESP-NOW behavior — no recv callback,
-pure sensor emitters); they never poll it for incoming data. See
+act on nothing they receive on RS485 (matching their ESP-NOW behavior — no
+recv callback, pure sensor emitters), but they DO read the bus every loop
+(`Rs485Link::observeBus()`), discarding what they decode: idle detection
+updates its timestamp on bytes *read*, so a node that never reads can't tell
+a busy bus from a quiet one and transmits over other nodes' frames. That
+makes their RS485 RX pin required wiring, not optional. See
 `PROTOCOL.md`'s "Dual-send" and "Reliability scope" sections for the full
 reasoning, including why this replaced an earlier same-day design where
 RS485 spoke JSON text independently of ESP-NOW's binary struct (two
@@ -277,9 +300,9 @@ Every downstream node sends a `NodeMessage` (`MSG_REGISTER`) **over ESP-NOW only
 - **Never block on WiFi:** the pinsetter's WiFi fallback is time-boxed (`WIFI_CONNECT_TIMEOUT_MS = 15s`). On timeout it calls `WiFi.disconnect()` (a scanning STA hops channels, which also breaks ESP-NOW) and continues ESP-NOW-only with no IP network. The original test firmware looped forever waiting for WiFi, which kept `setup()` from ever reaching ESP-NOW init — that was why the pinsetter never registered (endless `....` on serial).
 
 ## Firmware state
-`break_beam_test.ino` — debounced (30ms) per-lane reads, per-lane FOUL/CLEAR dual-sent on ESP-NOW and RS485, buzzer warble (700/1300Hz) while either lane is blocked. ESP-NOW behavior verified on hardware; RS485 fallback added 2026-07-18, not yet tested.
+`foul_node.ino` — debounced (30ms) per-side reads, per-side FOUL/CLEAR dual-sent on ESP-NOW and RS485, buzzer warble (700/1300Hz) while either lane is blocked. ESP-NOW behavior verified on hardware; RS485 fallback added 2026-07-18, not yet tested.
 
-`gateway_node.ino` — dynamic registration for fouling, speed, ball detection, and pinsetter nodes (ESP-NOW only); sends pure semantic `NodeMessage{MSG_COMMAND, code=CommandCode, laneNumber, data[0]=cycleCount}` (the pinsetter resolves relays itself, but no longer decides cycle count itself -- see below), dual-sent on ESP-NOW and RS485. Also extracts a `MSG_STATUS`'s `MachineRecord` ball bit for the relevant lane (`ballNumberForLane()`) and forwards it to the Pi. **No longer acts on FOUL itself** (2026-08-07) — `MSG_LANE_EVENT` is forwarded to the Pi as-is regardless of `code` (FOUL or CLEAR), with no local cooldown/debounce and no `CMD_RERACK` sent from here. That decision (whose ball it is, whether to suppress a debounced repeat, when to rerack) now lives entirely in `state_machine/state_machine.py`'s `on_foul()`/`FOUL_COOLDOWN_S` — see "System architecture" above. The serial console's manual `cycle`/`rerack` are unaffected (bench tool, always immediate). `PINSETTER_ENABLED=true`, `RS485_ENABLED=true`. Acks the pinsetter's `MSG_STATUS` messages (received on either transport) with a dual-sent `MSG_ACK` — see `PROTOCOL.md`. `MSG_LANE_EVENT`/`MSG_BEAM_EVENT`/`MSG_STATUS` all dispatch through one shared `handleIncomingNodeMessage()` regardless of which transport (ESP-NOW or RS485) they arrived on; `MSG_REGISTER` stays ESP-NOW-only and handled separately (needs a MAC). Forwards every lane/beam event to the Pi over UART2 as-is, with no interval/timing logic applied on the gateway either; a `UART_SCORE_EVENT` from the Pi is broadcast onto both ESP-NOW (`FF:FF:FF:FF:FF:FF`) and RS485 (inherently broadcast on a shared bus) as `MSG_SCORE_EVENT`. **Serial bench console @9600**: `cycle <lane>`, `rerack <lane>`, `respot <lane>`, `power <lane> on|off`, `pstatus`, `status`.
+`gateway_node.ino` — dynamic registration for fouling, speed, ball detection, and pinsetter nodes (ESP-NOW only); sends pure semantic `NodeMessage{MSG_COMMAND, code=CommandCode, laneSide, data[0]=cycleCount}` (the pinsetter resolves relays itself, but no longer decides cycle count itself -- see below), dual-sent on ESP-NOW and RS485. Also extracts a `MSG_STATUS`'s `MachineRecord` ball bit for the relevant side (`ballForSide()`) and forwards it to the Pi. Deduplicates dual-sent messages across both transports (`DualSendFilter`) so the Pi doesn't see every foul/beam/status twice. **No longer acts on FOUL itself** (2026-08-07) — `MSG_LANE_EVENT` is forwarded to the Pi as-is regardless of `code` (FOUL or CLEAR), with no local cooldown/debounce and no `CMD_RERACK` sent from here. That decision (whose ball it is, whether to suppress a debounced repeat, when to rerack) now lives entirely in `state_machine/state_machine.py`'s `on_foul()`/`FOUL_COOLDOWN_S` — see "System architecture" above. The serial console's manual `cycle`/`rerack` are unaffected (bench tool, always immediate). `PINSETTER_ENABLED=true`, `RS485_ENABLED=true`. Acks the pinsetter's `MSG_STATUS` messages (received on either transport) with a dual-sent `MSG_ACK` — see `PROTOCOL.md`. `MSG_LANE_EVENT`/`MSG_BEAM_EVENT`/`MSG_STATUS` all dispatch through one shared `handleIncomingNodeMessage()` regardless of which transport (ESP-NOW or RS485) they arrived on; `MSG_REGISTER` stays ESP-NOW-only and handled separately (needs a MAC). Forwards every lane/beam event to the Pi over UART2 as-is, with no interval/timing logic applied on the gateway either; a `UART_SCORE_EVENT` from the Pi is broadcast onto both ESP-NOW (`FF:FF:FF:FF:FF:FF`) and RS485 (inherently broadcast on a shared bus) as `MSG_SCORE_EVENT`. **Serial bench console @9600**: `cycle <a|b>`, `rerack <a|b>`, `respot <a|b>`, `power <a|b> on|off`, `pstatus`, `status` — sides, not lane numbers.
 
 `speed_node.ino` — one lane pair, 2 break-beams per lane. No local timing/state machine: debounces each sensor and emits `MSG_BEAM_EVENT` (BROKEN/CLEAR, upstream/downstream) on every edge, dual-sent on ESP-NOW and RS485, same shape as the fouling node's per-sensor emission. Registers as `NODE_SPEED` (ESP-NOW only). Not yet bench-tested; GPIO pins (sensors and RS485) are placeholders.
 
@@ -293,7 +316,7 @@ Every downstream node sends a `NodeMessage` (`MSG_REGISTER`) **over ESP-NOW only
 
 ## Next
 1. Bench test the full chain: fouling node boots → gateway logs `Registered FOULING node`; pinsetter boots → `Registered PINSETTER node`; trip the foul sensor → gateway forwards the raw event to the Pi (no local action, see below) → `state_machine.py`'s `on_foul()` sends `CMD_RERACK` with an explicit `cycleCount` → pinsetter sequences that many cycles.
-2. Drive the gateway serial console directly (`power 7 on`, `cycle 8`, `rerack 8`) to test relays without tripping beams.
+2. Drive the gateway serial console directly (`power a on`, `cycle b`, `rerack b`) to test relays without tripping beams.
 3. Verify the DI expander address and RS485 pins on **every board** — pinsetter, gateway, fouling, speed, and ball detect. The gateway/fouling/speed/ball-detect RS485 transceivers and pins are all brand new, entirely unverified (see the Hardware section); only the pinsetter's RS485 pins predate this session, and even those were never bench-tested.
 4. Confirm each machine's relay channel assignment matches real wiring in the pinsetter's own `MACHINES[]` (no longer on the gateway).
 5. Set a real `otaPassword` on the pinsetter node (currently `changeme`).
@@ -302,4 +325,4 @@ Every downstream node sends a `NodeMessage` (`MSG_REGISTER`) **over ESP-NOW only
 8. Bench test the unified `NodeMessage` protocol (`PROTOCOL.md`) on real hardware — implemented 2026-07-18 across all four sketches (previously JSON on the pinsetter, now binary `MSG_STATUS` on both transports; RS485 extended from pinsetter-only to every node later the same session) but not yet flashed/verified. Watch especially for: the `MachineRecord` bit-packing round-tripping correctly, the gateway's UART translation to the Pi producing byte-identical payloads to before (state_machine/protocol.py is unchanged and expects the old shapes), and the RS485 shared bus actually working end-to-end with all four boards wired to it (entirely new hardware on the gateway/fouling/speed side — the transceivers don't physically exist yet). Specifically confirm: a `MSG_STATUS` sent with ESP-NOW deliberately jammed/out of range still arrives and gets ack'd via RS485 alone, and that a `MSG_LANE_EVENT`/`MSG_BEAM_EVENT` shows up at the gateway via RS485 under the same condition.
 9. **Move relay/DI-to-lane-function mapping off firmware, onto the software (Pi) side (2026-08-07, user's call, not yet designed or built).** `pinsetter_node.ino`'s `MACHINES[]` (`{laneNumber, cycleRelay, powerRelay}`) is currently a compile-time C++ array — reassigning which relay channel drives which lane's cycle/power today means editing firmware and reflashing. Same problem will apply to whatever DI/optocoupler-to-lane mapping gets added for ball-state/cycle-complete sensing (see item 3's DI note and the "Pinsetter interface node" entry above) — there's no `DI_CONFIG[]` equivalent yet, and it shouldn't be built as another compile-time array either. The user wants both maps defined and changed from the software side instead, so relay/DI reassignment is a config change, not a firmware edit+reflash. Not yet designed — this is a real protocol question, not just moving a struct: today the gateway already sends *lane-scoped* semantic commands (`MSG_COMMAND{code=CommandCode, laneNumber}`) and the pinsetter resolves `laneNumber` → relay channel itself, entirely locally. Pushing that mapping to the Pi means either (a) the Pi/gateway starts sending raw channel-level commands instead of lane-scoped ones (collapses the "pinsetter owns its own machine config" boundary the pinsetter currently has), or (b) the pinsetter keeps resolving locally but the mapping table itself is pushed down to it over the mesh (e.g. a new `MSG_CONFIG` message, or piggybacked on `MSG_REGISTER`'s handshake) rather than compiled in. Needs a real design pass before touching `pinsetter_node.ino` (this mapping already moved once before — from the gateway to the pinsetter, 2026-07-18 — so weigh that history before moving it again).
 10. **Bench test the ball detection node end to end (2026-08-12, implemented, never run on hardware).** `ball_detect_node.ino` is new and its GPIO/RS485 pins are placeholders. Confirm in this order: the gateway logs `Registered BALL DETECT node` once at boot (and stays silent on the 10s re-announces); breaking the beam logs `MSG_BEAM_EVENT { lane=N, role=ball_detect, BROKEN }` at the gateway; the Pi's `state_machine` moves the lane to `AWAITING_PINFALL` **from READY** with no speed node present (that's the case the strict `on_downstream_beam()` guard couldn't serve, and the reason `on_ball_detected()` exists separately); vision self-triggers a capture off the same edge and POSTs a standing mask; and the resulting `_record_ball()` fires the pinsetter cycle. Then specifically test a lane wired with **both** a speed node and a ball detection node: the ball-detect edge must NOT consume the speed pairing (a real mph should still be reported from the speed node's own downstream beam), and vision must capture exactly once, not twice — `_capture_in_flight` is the only thing preventing a phantom second ball of 0 on the scoresheet.
-11. **Bench test the new ball-reporting/cycle-count-on-Pi path (2026-08-07, implemented, not yet run on real hardware).** `gateway_node.ino`'s `ballNumberForLane()`, `UartPinsetterStatusPayload.ballNumber`, `PinsetterCommandFromPi.cycleCount`, `pinsetter_node.ino`'s reworked `execRerack(mi, cycleCount)`, and `state_machine.py`'s `_rerack_cycle_count()`/`reconcile_ball_number()` are all new/changed together but only verified against a fake in-process bridge, not real serial frames end to end. Specifically confirm: a real `MSG_STATUS` round-trips a correct ball bit through `ballNumberForLane()` (not just a hand-constructed test payload), a foul with no prior status report yet falls back to a 2-cycle rerack as intended, and a subsequent foul after a `STATUS_CYCLE_COMPLETE` correctly drops to 1 cycle once the pinsetter's report says ball 2.
+11. **Bench test the new ball-reporting/cycle-count-on-Pi path (2026-08-07, implemented, not yet run on real hardware).** `gateway_node.ino`'s `ballForSide()`, `UartPinsetterStatusPayload.ballNumber`, `PinsetterCommandFromPi.cycleCount`, `pinsetter_node.ino`'s reworked `execRerack(mi, cycleCount)`, and `state_machine.py`'s `_rerack_cycle_count()`/`reconcile_ball_number()` are all new/changed together but only verified against a fake in-process bridge, not real serial frames end to end. Specifically confirm: a real `MSG_STATUS` round-trips a correct ball bit through `ballForSide()` (not just a hand-constructed test payload), a foul with no prior status report yet falls back to a 2-cycle rerack as intended, and a subsequent foul after a `STATUS_CYCLE_COMPLETE` correctly drops to 1 cycle once the pinsetter's report says ball 2.

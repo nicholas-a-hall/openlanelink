@@ -125,11 +125,18 @@ struct NodeMessage {
   uint8_t msgType;       // what kind of message this is
   uint8_t seq;           // ack/retry correlation
   uint8_t code;          // msgType-scoped sub-code
-  uint8_t laneNumber;    // 0 = node-level / not lane-specific
+  LaneSide laneSide;     // A or B side of this gateway's lane pair; NONE = node-level
   uint32_t timestampMs;  // sender's own millis()
   uint8_t data[64];      // msgType-specific payload
 };                        // 72 bytes, fixed, every message, every transport
 ```
+
+There are **no lane numbers anywhere on the mesh**. A gateway's mesh is
+exactly one lane pair, so a message only ever names which of the pair's two
+*sides* it concerns. That is what makes firmware generically provisionable —
+every leaf sketch is identical on every pair in the house, with the gateway's
+MAC the only per-pair constant — and the side → real lane number mapping
+lives once, in software, on the compute node.
 
 - **ESP-NOW** carries `NodeMessage` as the packet payload directly — ESP-NOW is already packetized by the radio, so no extra framing needed.
 - **RS485** is a raw byte stream, so it wraps the same struct in an explicit frame: start byte, length, payload, XOR checksum. Every node's operational traffic goes out on both transports at once — not failure-detection-then-failover, always-on redundancy.
@@ -166,13 +173,13 @@ RS485 is a raw byte stream, so it wraps the identical 72-byte struct in an expli
 
 ### Worked example: a foul event on the wire
 
-A `MSG_LANE_EVENT` for lane 3 going into foul state, at `timestampMs = 0x0001E240` (123456 ms since boot):
+A `MSG_LANE_EVENT` for the **B side** of a pair going into foul state, at `timestampMs = 0x0001E240` (123456 ms since boot):
 
 ```
 msgType     = 0x01              // MSG_LANE_EVENT
 seq         = 0x00              // unused for this type, fire-and-forget
 code        = 0x01              // LANE_FOUL (0x00 would be LANE_CLEAR)
-laneNumber  = 0x03
+laneSide    = 0x02              // LaneSide::B (0x01 = A, 0x00 = node-level)
 timestampMs = 40 E2 01 00       // little-endian uint32
 data[64]    = 00 00 00 ... 00   // unused, zeroed
 ```
@@ -180,10 +187,10 @@ data[64]    = 00 00 00 ... 00   // unused, zeroed
 That's the raw 72-byte payload ESP-NOW sends as-is. Framed for RS485, with `LEN = 0x48` (72 decimal):
 
 ```
-AA 48 01 00 01 03 40 E2 01 00 [64 zero bytes] <checksum>
+AA 48 01 00 01 02 40 E2 01 00 [64 zero bytes] <checksum>
 ```
 
-`checksum` is the XOR of `LEN` and all 72 payload bytes. To write a test: construct that byte sequence, compute the XOR checksum, feed it to the RS485 receive parser, and confirm it decodes back to `laneNumber=3, code=LANE_FOUL`. Same struct works for an ESP-NOW loopback test — skip the frame entirely and hand the raw 72 bytes straight to the receive callback.
+`checksum` is the XOR of `LEN` and all 72 payload bytes. To write a test: construct that byte sequence, compute the XOR checksum, feed it to the RS485 receive parser, and confirm it decodes back to `laneSide=B, code=LANE_FOUL`. Same struct works for an ESP-NOW loopback test — skip the frame entirely and hand the raw 72 bytes straight to the receive callback.
 
 ### Reliability
 

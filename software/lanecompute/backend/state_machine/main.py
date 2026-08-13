@@ -136,9 +136,9 @@ async def on_status_event(ev):
         return
 
     machine = state_machine.get_machine(ev.lane_number, bridge)
-    # Always None today -- see protocol.py's StatusEvent docstring for why
-    # -- but cross-checking costs nothing and needs no changes here once
-    # uart_bridge starts actually sending it.
+    # The pinsetter's own reported ball, forwarded end to end (gateway
+    # ballForSide() -> uart_bridge on_status_event() -> here). None only for
+    # a status with no matching MachineRecord; see protocol.py's StatusEvent.
     if ev.ball_number is not None:
         machine.reconcile_ball_number(ev.ball_number)
     if ev.status_code != protocol.STATUS_CYCLE_COMPLETE:

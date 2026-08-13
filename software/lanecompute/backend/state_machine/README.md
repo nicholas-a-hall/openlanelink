@@ -86,6 +86,13 @@ Config is via environment variables (all optional, defaults shown):
 LANE_NUMBERS=7,8
 UART_BRIDGE_URL=http://localhost:8100
 ```
+`LANE_NUMBERS` must list the same two lanes that `../uart_bridge` maps its
+mesh's A/B sides to (`LANE_SIDE_A`/`LANE_SIDE_B` there -- the mesh itself has
+no lane numbers at all; see that service's `lane_map.py`). Nothing
+cross-checks the two, and a mismatch shows up as REST 404s on a lane the
+bridge is happily publishing events for. `GET localhost:8100/health` reports
+the bridge's mapping as `laneSides`.
+
 `LANE_NUMBERS` is a comma-separated list of the lane numbers this compute
 node instance covers -- must match whatever's actually flashed onto the
 fouling/speed/pinsetter nodes on this mesh (see above). `../uart_bridge`

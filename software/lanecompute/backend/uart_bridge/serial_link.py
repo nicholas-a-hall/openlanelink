@@ -4,6 +4,11 @@ Frame: [0xAA START][LEN][PAYLOAD (LEN bytes, payload[0] = msg type)][CHECKSUM]
 CHECKSUM = XOR of LEN and every PAYLOAD byte. Mirrors gateway_node.ino's
 sendToPi()/pollPiLink() exactly -- keep both sides in sync if this changes.
 
+Outbound methods take real LANE NUMBERS and convert to the mesh's A/B sides
+(lane_map.py) before encoding. Inbound frames decode to sides and are
+translated the other way in service.py, so this class is the boundary where
+lane numbers stop and sides begin.
+
 This is the low-level transport only, adapted from
 ../state_machine/uart_bridge.py now that the bridge is its own process --
 service.py wraps it in an HTTP/WebSocket surface for other processes (the
@@ -17,6 +22,7 @@ import time
 
 import serial
 
+import lane_map
 import protocol as p
 
 log = logging.getLogger(__name__)
@@ -75,8 +81,18 @@ class SerialLink:
             return False
 
     # ---- outbound (Pi -> gateway) ----
+    # Callers pass real LANE NUMBERS; the mesh only understands sides, so
+    # every outbound path resolves one to the other here, at the last moment
+    # before encoding. See lane_map.py. A lane that isn't on this pair is
+    # DROPPED rather than guessed at -- guessing would fire a solenoid on
+    # the wrong lane.
     def send_pinsetter_command(self, command: int, lane_number: int, cycle_count: int = 1):
-        self._send_frame(p.UART_PINSETTER_COMMAND, p.encode_pinsetter_command(command, lane_number, cycle_count))
+        side = lane_map.side_for_lane(lane_number)
+        if side is None:
+            log.warning("dropping pinsetter command %s for lane %s -- not on this pair %s",
+                        command, lane_number, lane_map.describe())
+            return
+        self._send_frame(p.UART_PINSETTER_COMMAND, p.encode_pinsetter_command(command, side, cycle_count))
 
     def send_cycle(self, lane_number: int, cycle_count: int = 1):
         self.send_pinsetter_command(p.CMD_CYCLE, lane_number, cycle_count)
@@ -91,9 +107,14 @@ class SerialLink:
         self.send_pinsetter_command(p.CMD_RERACK, lane_number, cycle_count)
 
     def send_score_event(self, lane_number: int, ball_number: int, pinfall_mask: int, timestamp_ms: int):
+        side = lane_map.side_for_lane(lane_number)
+        if side is None:
+            log.warning("dropping score event for lane %s -- not on this pair %s",
+                        lane_number, lane_map.describe())
+            return
         self._send_frame(
             p.UART_SCORE_EVENT,
-            p.encode_score_event(lane_number, ball_number, pinfall_mask, timestamp_ms),
+            p.encode_score_event(side, ball_number, pinfall_mask, timestamp_ms),
         )
 
     def _send_frame(self, msg_type: int, data: bytes):

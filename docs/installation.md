@@ -26,33 +26,55 @@ lane's deck.
 
 ## 1. Firmware
 
+### 1a. Install the shared protocol library first
+
+Every sketch `#include`s the `lanelink` library (the `NodeMessage` struct,
+the mesh enums, the RS485 framing). It lives once in the repo at
+`firmware/lib/lanelink/` rather than being copied per sketch — nodes whose
+protocol definitions drift apart don't fail loudly, they silently misparse
+every frame. **Nothing compiles until it's linked into your Arduino
+sketchbook**, which is a one-time step:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File firmware\tools\install_lanelink_library.ps1
+```
+
+On macOS/Linux use `bash firmware/tools/install_lanelink_library.sh` instead.
+Both create a link (not a copy), so editing the header in the repo takes
+effect on the next compile. Re-run with `-Check` / `--check` any time to
+confirm it's still wired up; if you skip this, sketches fail with
+`lanelink_protocol.h: No such file or directory`. Restart the Arduino IDE
+after installing.
+
+### 1b. Flash the nodes
+
 Flash each ESP32 node from its own sketch folder under `firmware/`
 (`gateway_node/`, `pinsetter_node/`, `foul_node/`, `speed_node/`,
-`ball_detect_node/`) via the
-Arduino IDE — each `.ino` is self-contained per the project's sketch-layout
-convention. Wiring, pin assignments, and per-node hardware notes are in
+`ball_detect_node/`) via the Arduino IDE. Wiring, pin assignments, and
+per-node hardware notes are in
 [`firmware/HANDOFF.md`](https://github.com/nicholas-a-hall/openlanelink/blob/main/firmware/HANDOFF.md);
 the wire protocol itself is documented on the [main page]({{ '/' | relative_url }}#mesh-protocol-message-format)
 if you need to debug traffic on the bus.
 
-### 1a. Per-pair constants to set before flashing
+### 1c. The only per-pair constant
 
-Every downstream node hardcodes its gateway's MAC address and its own
-lane-pair preset at compile time (dynamic discovery isn't built yet — see
-the main page's "Top of mind todos"). Set these for your actual pair, not
-the example values shipped in the sketches:
+**Firmware carries no lane numbers.** Every node addresses the two *sides* of
+its gateway's lane pair (`LaneSide::A` / `LaneSide::B`); a gateway's mesh is
+exactly one lane pair, so a lane number tells it nothing. That means the
+fouling, speed, ball detection, and pinsetter sketches are **identical on
+every lane pair in the house** — flash the same build everywhere:
 
 | Sketch | Constant | What it is |
 |---|---|---|
-| `foul_node`, `speed_node`, `ball_detect_node` | `GATEWAY_MAC` | your gateway's ESP-NOW MAC |
-| `foul_node`, `speed_node`, `ball_detect_node` | `LANE_NUMBER[]` | the two lane numbers this pair covers (`{7, 8}` in the shipped sketches) |
-| `speed_node` | `SENSOR_LANE[]` | which of the 4 beams belongs to which lane |
-| `pinsetter_node` | `MACHINES[]` | `{laneNumber, cycleRelay, powerRelay}` per machine — the relay channels each lane's pinsetter is physically wired to |
+| `foul_node`, `speed_node`, `ball_detect_node`, `pinsetter_node` | `GATEWAY_MAC` / `gatewayMac` | your gateway's ESP-NOW MAC — **the only thing to change per pair** |
 
-The gateway itself needs none of these: it's lane-agnostic by design (a
-dumb relay — lane numbers are stamped in by the leaf nodes), which is also
-why nothing can cross-check your lane numbers automatically. Get the
-gateway's MAC by flashing
+Which physical sensor or relay is "side A" versus "side B" is a wiring
+decision, and which real lanes those sides *are* is set once on the Pi (see
+2a) — not in firmware, so moving a board to another pair needs no reflash
+beyond the gateway MAC.
+
+The gateway needs no constants at all: it never learns its own lane numbers.
+Get its MAC by flashing
 [`firmware/utility/mac_finder/`](https://github.com/nicholas-a-hall/openlanelink/blob/main/firmware/utility/mac_finder/mac_finder.ino)
 onto it first and reading the serial console at 9600 baud, then flash the
 real `gateway_node` sketch over it.
@@ -63,6 +85,11 @@ Two things worth knowing before you wire anything up:
   gateway's UART2 pins for the Pi link (RX=16/TX=17) and the speed and ball
   detection nodes' sensor and RS485 pins. Confirm them against your actual
   boards — `firmware/HANDOFF.md` flags each unverified one.
+- **Wire RS485 RX on every node, including the sensor-only ones.** The
+  fouling, speed, and ball detection nodes act on nothing they receive, but
+  they read the bus to know when it's busy — that's what stops them
+  transmitting over another node's frame on a shared half-duplex bus. A
+  floating RX pin silently reintroduces collisions.
 - **`speed_node` and `ball_detect_node` are independent — deploy either,
   both, or neither.** Both give the Pi a "ball reached the pins" trigger
   (which is what starts vision → scoring → pinsetter cycle); the speed node
@@ -72,11 +99,11 @@ Two things worth knowing before you wire anything up:
 - **The pinsetter node's OTA password is `changeme`.** Set a real one
   before this goes anywhere near a public network.
 
-### 1b. Check the mesh before touching the Pi
+### 1d. Check the mesh before touching the Pi
 
-The gateway has a serial bench console at **9600 baud** — `cycle <lane>`,
-`rerack <lane>`, `respot <lane>`, `power <lane> on|off`, `pstatus`,
-`status`. Use it to confirm each node registers (`Registered FOULING
+The gateway has a serial bench console at **9600 baud** — `cycle <a|b>`,
+`rerack <a|b>`, `respot <a|b>`, `power <a|b> on|off`, `pstatus`,
+`status`. Commands take a **side**, not a lane number. Use it to confirm each node registers (`Registered FOULING
 node`, `Registered PINSETTER node`, `Registered SPEED node`, `Registered
 BALL DETECT node` — whichever you've flashed) and that
 relays fire on the right machine, before any software is in the loop. If a
@@ -100,17 +127,28 @@ uart_bridge (8100) ──┬── state_machine (8000) ── UI
 
 ### 2a. Set which lanes this Pi covers
 
-`LANE_NUMBERS` (comma-separated, default `7,8`) tells `state_machine`
-which lanes this compute node serves. It's an environment variable, not a
-code edit:
+This is where lane numbers enter the system — **the only place they exist.**
+Two environment variables, no code edits:
 
 ```bash
-export LANE_NUMBERS=7,8
+export LANE_SIDE_A=7      # uart_bridge: which real lane the mesh's A side is
+export LANE_SIDE_B=8      # uart_bridge: ...and its B side
+export LANE_NUMBERS=7,8   # state_machine: which lanes this node serves
 ```
 
-It must match whatever's actually flashed onto this mesh's
-fouling/speed/pinsetter nodes (section 1a) — nothing verifies that for
-you. There's no configuration UI for it yet.
+`LANE_SIDE_A`/`LANE_SIDE_B` (defaults `7`/`8`) tell the **UART bridge** how to
+resolve the mesh's A/B sides into real lane numbers. It does that translation
+at the mesh boundary, so `state_machine`, `vision`, and the UI only ever see
+lane numbers.
+
+`LANE_NUMBERS` (default `7,8`) tells **state_machine** which lanes it serves.
+It must list the same two lanes, and nothing cross-checks that for you —
+a mismatch shows up as REST 404s on a lane the bridge is happily publishing.
+`GET localhost:8100/health` reports the bridge's mapping as `laneSides` so
+you can confirm what it actually resolved.
+
+Re-pointing this Pi at a different lane pair is now purely these three
+values — no firmware change, since the nodes have no lane numbers to update.
 
 ### 2b. UART bridge
 
@@ -309,7 +347,7 @@ passed per kiosk instance.
 ## Adding a second pair later
 
 Repeat sections 1 and 2 with a new gateway/Pi, that pair's own
-`GATEWAY_MAC`/`LANE_NUMBER[]`/`MACHINES[]` values, a new `LANE_NUMBERS`,
+`GATEWAY_MAC` value, new `LANE_SIDE_A`/`LANE_SIDE_B`/`LANE_NUMBERS`,
 and a fresh camera calibration per new lane. If you're running
 `openlanescheduler`, extend `LANES` in its `.env` (e.g. `LANES=5,6,7,8`)
 and add that pair's `kiosk-lanes-*` service to whatever you pass to

@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+import lane_map
 import protocol as p
 
 log = logging.getLogger(__name__)
@@ -78,16 +79,44 @@ async def _broadcast_async(message: dict) -> None:
 
 # ---- SerialLink callbacks (fire on its background read thread; main.py
 # wires these into the SerialLink constructor) ----
+#
+# THIS IS WHERE SIDES BECOME LANE NUMBERS. Frames arrive off the mesh tagged
+# with a lane SIDE (the mesh has no lane numbers at all -- see lane_map.py);
+# everything downstream of this service, from state_machine to vision to the
+# UI, speaks real lane numbers. Translating here rather than there is what
+# let the mesh drop lane numbers without a single change to any consumer:
+# the /events payloads below are byte-for-byte the same shape they were.
+
+
 def on_lane_event(ev) -> None:
-    _broadcast({"type": "laneEvent", "eventType": ev.event_type, "laneNumber": ev.lane_number, "timestampMs": ev.timestamp_ms})
+    lane = lane_map.lane_for_side(ev.lane_side)
+    if lane is None:
+        # A foul-line edge that names no side is meaningless -- there's no
+        # sensible lane to attribute it to, so publishing it would invent
+        # one. Drop it loudly instead.
+        log.warning("dropping LaneEvent with unmapped side %s: %s", ev.lane_side, ev)
+        return
+    _broadcast({"type": "laneEvent", "eventType": ev.event_type, "laneNumber": lane, "timestampMs": ev.timestamp_ms})
 
 
 def on_beam_event(ev) -> None:
-    _broadcast({"type": "beamEvent", "eventType": ev.event_type, "laneNumber": ev.lane_number, "beamRole": ev.beam_role, "timestampMs": ev.timestamp_ms})
+    lane = lane_map.lane_for_side(ev.lane_side)
+    if lane is None:
+        log.warning("dropping BeamEvent with unmapped side %s: %s", ev.lane_side, ev)
+        return
+    _broadcast({"type": "beamEvent", "eventType": ev.event_type, "laneNumber": lane, "beamRole": ev.beam_role, "timestampMs": ev.timestamp_ms})
 
 
 def on_status_event(ev) -> None:
-    _broadcast({"type": "statusEvent", "statusCode": ev.status_code, "laneNumber": ev.lane_number, "ballNumber": ev.ball_number, "timestampMs": ev.timestamp_ms})
+    # Unlike sensor edges, a status event with NO side is completely normal:
+    # STATUS_HEARTBEAT, STATUS_RELAY_FAULT, STATUS_ALL_ACK,
+    # STATUS_MACHINE_STATUS, and STATUS_DI_CHANGE all describe the pinsetter
+    # BOARD rather than one of its machines (see firmware/PROTOCOL.md). Those
+    # keep crossing as laneNumber 0, which is exactly the sentinel
+    # ../state_machine/main.py's on_status_event() already checks for before
+    # it would otherwise conjure a phantom "lane 0" machine.
+    lane = lane_map.lane_for_side(ev.lane_side)
+    _broadcast({"type": "statusEvent", "statusCode": ev.status_code, "laneNumber": lane or 0, "ballNumber": ev.ball_number, "timestampMs": ev.timestamp_ms})
 
 
 # ---- health ----
@@ -98,7 +127,15 @@ async def health():
     answer the separate question of whether the gateway link itself is
     good; a client should treat a 200 with uartConnected=false or
     stale=true as "bridge process fine, mesh link degraded", not as a
-    process-level failure."""
+    process-level failure.
+
+    laneSides reports which real lanes this bridge maps its pair's A and B
+    sides to (see lane_map.py). It's here because that mapping exists
+    nowhere else in the system -- the mesh doesn't carry lane numbers and
+    the gateway doesn't know them -- so without exposing it, a bridge
+    pointed at the wrong pair looks completely healthy while sending every
+    command to the wrong lanes. It must agree with state_machine's
+    LANE_NUMBERS; nothing cross-checks that automatically."""
     now = time.monotonic()
     last = link.last_frame_at if link else None
     connected = bool(link and link.connected)
@@ -107,6 +144,7 @@ async def health():
         "status": "ok",
         "uartConnected": connected,
         "stale": stale,
+        "laneSides": lane_map.describe(),
         "port": link.port if link else None,
         "baud": link.baud if link else None,
         "lastFrameAgoS": None if last is None else round(now - last, 1),
@@ -211,8 +249,21 @@ async def debug_beam_event(body: DebugBeamEventBody):
     which is the case worth replaying most often -- pass
     beam_role=ROLE_BALL_DETECT (2) instead to replay a ball_detect_node's
     near-pins beam, which every consumer treats the same way except
-    state_machine's speed pairing (see protocol.py's ROLE_BALL_DETECT)."""
-    ev = p.BeamEvent(body.event_type, body.lane_number, body.beam_role, int(time.monotonic() * 1000) % (2 ** 32))
-    log.info("injecting synthetic BeamEvent: %s", ev)
+    state_machine's speed pairing (see protocol.py's ROLE_BALL_DETECT).
+
+    Takes a lane NUMBER for the caller's convenience but converts it to a
+    side and builds a genuine side-tagged BeamEvent, so the injected event
+    travels the same lane -> side -> lane path a real frame does rather than
+    short-circuiting past lane_map. That makes this endpoint a usable check
+    of the mapping itself: inject lane 7, and if the feed doesn't publish
+    lane 7 back, the mapping is wrong."""
+    side = lane_map.side_for_lane(body.lane_number)
+    if side is None or side == p.SIDE_NONE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"lane {body.lane_number} is not on this pair -- this bridge covers {lane_map.describe()}",
+        )
+    ev = p.BeamEvent(body.event_type, side, body.beam_role, int(time.monotonic() * 1000) % (2 ** 32))
+    log.info("injecting synthetic BeamEvent: %s (lane %s -> side %s)", ev, body.lane_number, side)
     on_beam_event(ev)
-    return {"ok": True, "injected": {"eventType": ev.event_type, "laneNumber": ev.lane_number, "beamRole": ev.beam_role, "timestampMs": ev.timestamp_ms}}
+    return {"ok": True, "injected": {"eventType": ev.event_type, "laneNumber": body.lane_number, "laneSide": side, "beamRole": ev.beam_role, "timestampMs": ev.timestamp_ms}}

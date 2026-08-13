@@ -1,10 +1,23 @@
-"""Wire protocol for the gateway <-> Pi UART bridge.
+"""Event shapes and mesh constants for the UART bridge's JSON feed.
 
-Mirrors firmware/gateway_node/gateway_node.ino and
-firmware/speed_node/speed_node.ino. Struct layouts match the ESP32 GCC ABI:
-a uint32_t field is 4-byte aligned, which inserts padding after two uint8_t
-fields before it. Get this wrong and frames silently misparse -- see
-firmware/HANDOFF.md's "Gateway <-> Pi UART bridge" section.
+THIS PROCESS SPEAKS LANE NUMBERS. It reaches the mesh only through
+../uart_bridge's HTTP/WebSocket surface (see bridge_client.py), never over
+serial, and that service resolves the mesh's A/B lane sides to real lane
+numbers before anything reaches this feed (../uart_bridge/lane_map.py). So
+the dataclasses here carry `lane_number`, and nothing in this process ever
+sees a lane side.
+
+That is also why this file is NO LONGER a byte-for-byte duplicate of
+../uart_bridge/protocol.py, which it used to be. The two now describe
+genuinely different things: that one is the raw wire (sides, struct
+layouts, framing), this one is the bridge's decoded JSON feed (lane
+numbers). The constants they share -- EVENT_*, ROLE_*, STATUS_*, CMD_* --
+are still duplicated deliberately and must be kept in step by hand.
+
+The struct-packing helpers below are vestigial here: this process posts
+JSON, so nothing in it packs a frame. They're kept for now because they
+document the wire the bridge is speaking on this process's behalf; see
+firmware/PROTOCOL.md for the authoritative version.
 """
 
 import struct
@@ -88,7 +101,7 @@ class LaneEvent:
 class BeamEvent:
     event_type: int  # EVENT_BEAM_BROKEN or EVENT_BEAM_CLEAR
     lane_number: int
-    beam_role: int    # ROLE_UPSTREAM or ROLE_DOWNSTREAM
+    beam_role: int    # ROLE_UPSTREAM, ROLE_DOWNSTREAM, or ROLE_BALL_DETECT
     timestamp_ms: int
 
     @classmethod
@@ -103,13 +116,13 @@ class StatusEvent:
     lane_number: int  # 0 for node-level status codes (see PROTOCOL.md)
     timestamp_ms: int
     # The pinsetter's own reported ball (1 or 2) for lane_number, decoded
-    # from MSG_STATUS's MachineRecord.flags ball bit -- the gateway now
-    # extracts and forwards this on every UART_PINSETTER_STATUS frame (see
-    # gateway_node.ino's ballNumberForLane()/forwardStatusToPi()). None for
-    # the wire's 0 sentinel (node-level status, or a lane with no matching
-    # MachineRecord in this particular MSG_STATUS). This is the ground
-    # truth LaneStateMachine.reconcile_ball_number() uses to decide rerack
-    # cycle counts (state_machine.py) -- no longer dead code.
+    # from MSG_STATUS's MachineRecord.flags ball bit -- the gateway
+    # extracts it (gateway_node.ino's ballForSide()/forwardStatusToPi()) and
+    # ../uart_bridge/service.py's on_status_event() puts it on the feed.
+    # None for the wire's 0 sentinel (node-level status, or a side with no
+    # matching MachineRecord in this particular MSG_STATUS). This is the
+    # ground truth LaneStateMachine.reconcile_ball_number() uses to decide
+    # rerack cycle counts (state_machine.py).
     ball_number: int | None = None
 
     @classmethod
