@@ -33,7 +33,8 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 - Pinsetter control
 - ESP-NOW transport
 - RS-485 redundant transport
-- Gateway registration/recovery
+- Gateway peer registration, with a compute-node-owned allowlist the gateway caches and enforces
+- Generic firmware provisioning — every leaf sketch is identical on every lane pair
 - Lane-local game state
 - REST/WebSocket API
 - Bowler and overhead UIs
@@ -45,8 +46,9 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 - Production field testing
 
 **To-do**
+- Node identity in NVS + pair-button provisioning
+- Gateway failure/replacement recovery
 - Node health monitoring
-- Dynamic gateway discovery
 - Optimize pinsetter & gateway firmware
 - Performance improvements & reliability upgrades, vision service
 
@@ -55,7 +57,7 @@ In other words, the goal is simple: We want there to be more bowling centers in 
 
 - **Lane-pair survivability**: a lane must keep bowling with zero server dependency during an active session. If the site aggregator, Redis, or the network dies mid-frame, the lane still detects pins, scores, and cycles the pinsetter. Loss of upstream = loss of visibility, not loss of function.
 - **Vendor lock avoidance**: relay/optocoupler deploy pattern over OLL interconnects.
-- **Hot-swap in 5 minutes**: any node can be pulled and replaced with a cold spare in ~5 min. A spare must not need per-node configuration at swap time.
+- **Hot-swap in 5 minutes**: any node can be pulled and replaced with a cold spare in ~5 min. A spare must not need per-node configuration at swap time. *Partly met:* sensor and pinsetter firmware is now identical on every lane pair — a cold spare needs only its gateway's MAC, because nodes address the two **sides** of their pair rather than lane numbers. Removing that last constant is what the pair-button provisioning below is for.
 - **Commodity hardware only**: no purpose-built boards where an ESP32 + off-the-shelf sensor does the job. Cost and repairability over elegance.
 
 ## Architecture overview
@@ -219,7 +221,7 @@ enum StatusCode : uint8_t {
 };
 
 struct MachineRecord {       // 4 bytes, naturally aligned, no padding
-  uint8_t laneNumber;        // 0 = unused slot
+  uint8_t laneSide;          // LaneSide; NONE (0) = unused slot
   uint8_t flags;             // bit0=on, bit1=cycling, bit2=ball(0=1st/1=2nd), bits3-4=pendingCycles(0-3)
   uint16_t cooldownMs;       // full ms precision
 };
@@ -234,7 +236,7 @@ Every `MSG_STATUS`, regardless of which `StatusCode` triggered it, carries the s
 | `data[2..17]` | up to 4 `MachineRecord`s, 4 bytes each — always all machines on the node, regardless of which event triggered the send |
 | `data[18..63]` | reserved, zeroed — headroom for future fields without another protocol-breaking redesign |
 
-`laneNumber` follows the same split as the rest of the protocol: the specific lane for single-machine events (`STATUS_RELAY_ACK`, `STATUS_PULSE_ACK`, `STATUS_PULSE_COMPLETE`, `STATUS_REFUSED_PULSE_ONLY`, `STATUS_CYCLE_COMPLETE`, `STATUS_RESPOT_STUB`), and `0` for node-level events that describe every machine at once (`STATUS_ALL_ACK`, `STATUS_RELAY_FAULT`, `STATUS_MACHINE_STATUS`, `STATUS_DI_CHANGE`, `STATUS_HEARTBEAT`).
+`laneSide` follows the same split as the rest of the protocol: the specific side for single-machine events (`STATUS_RELAY_ACK`, `STATUS_PULSE_ACK`, `STATUS_PULSE_COMPLETE`, `STATUS_REFUSED_PULSE_ONLY`, `STATUS_CYCLE_COMPLETE`, `STATUS_RESPOT_STUB`), and `NONE` for node-level events that describe every machine at once (`STATUS_ALL_ACK`, `STATUS_RELAY_FAULT`, `STATUS_MACHINE_STATUS`, `STATUS_DI_CHANGE`, `STATUS_HEARTBEAT`).
 
 Digital input is polled every 100ms on the pinsetter node, but only produces a `STATUS_DI_CHANGE` datagram on an actual state change — it's edge-triggered, not periodic. The periodic signal is `STATUS_HEARTBEAT` alone.
 
@@ -262,6 +264,25 @@ The mesh-facing bucket is the REST layer's thin wrapper over the gateway UART br
 
 Both WebSocket endpoints are read-only broadcast — a control tablet sends its commands through REST, then gets state updates pushed back over its own socket like every other client. There's no command channel on the socket itself, which keeps the write path in one place regardless of which client issued it.
 
+## API surface: UART bridge
+
+A second, smaller service owns the serial link to the gateway and nothing else. Everything upstream of it — the scoring API above, the vision daemon, the UI — reaches the mesh through it rather than opening the port themselves, so exactly one process talks to the hardware.
+
+It is also the boundary where mesh identity becomes lane identity, in both directions: the mesh reports which **side** of a lane pair an event concerns, and this service resolves that to a real lane number before publishing. Nothing above it ever sees a side.
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/health` | link state, the configured A/B → lane mapping, and peer counts. Returns 200 even with no gateway attached — "is the process up" and "is the mesh reachable" are separate questions |
+| `WS` | `/events` | read-only broadcast of every decoded mesh event, in lane numbers |
+| `POST` | `/commands/pinsetter`, `/commands/cycle`, `/commands/rerack`, `/commands/score-event` | outbound to the mesh; the lane number is mapped back to a side here |
+| `GET` | `/peers` | every node MAC the gateway has reported, allowed or not |
+| `GET` | `/peers/pending` | seen on the mesh but not yet allowed — the operator's work queue |
+| `POST` | `/peers/{mac}/allow` · `/peers/{mac}/deny` | grant or revoke; the updated allowlist is pushed to the gateway immediately |
+
+**Why allowing a node is a human decision.** Every node hardcodes its gateway's MAC, so a correctly flashed one can only ever reach its own gateway. A *mis*flashed one reaches whichever gateway that MAC names — and because every leaf sketch is now identical across pairs, its events are indistinguishable from the real node's. Nothing in software can tell "my fouling node" apart from "the neighbouring pair's fouling node, flashed wrong". So the gateway enforces a list rather than guessing, and a person decides what goes on it.
+
+A gateway with no allowlist yet accepts anyone, which is what lets a fresh install come up unattended; the first allow ends that. The compute node persists the list and re-pushes it whenever the link reconnects, and the gateway keeps its own copy in flash so it keeps enforcing while the Pi is down.
+
 ## UI: React front end
 
 Two screens per lane: a 16:9 overhead monitor and a 9:16 bowler-facing control tablet, each pointed at its own device (`/display/:laneId`, `/control/:laneId`). Built on Vite + React Router. Game state is pushed down from a per-lane WebSocket service run by the compute node; the front end's own hooks (`useLaneFeed`, `useTakeoverFeed`) are the sole integration points for that feed, so the components consuming them stay decoupled from wherever the data actually comes from.
@@ -273,9 +294,18 @@ Loose threads in the current design, gathered here instead of scattered through 
 - **No node liveness/timeout detection.** The gateway has no mechanism to notice a node that's gone silent — the 10s `MSG_REGISTER` re-announce only lets a *rebooted gateway* re-learn its nodes, it was never meant to detect a *dead* one. Flagged above as a todo: extend the existing heartbeats to double as health/status checks rather than adding a new message type.
 - **`MSG_SCORE_EVENT` has no consumer yet.** The gateway broadcasts it whenever the Pi emits a score event, but no node currently acts on it — it's there for a future display/UI node that doesn't exist yet. Every receiver's default dispatch already ignores unrecognized-but-valid message types harmlessly, so broadcasting it early costs nothing.
 - **RS485 has no sender/receiver addressing.** The frame carries no source identifier — it works today only because each gateway's mesh has at most one node of each type, so `msgType` alone disambiguates who sent it. Breaks the moment a future topology puts two same-type nodes on one shared bus; not designed for yet.
-- **Gateway MAC is hardcoded at compile time**, not dynamically discovered. Every downstream node bakes in its gateway's MAC as a firmware constant. Dynamic gateway discovery is the intended end state, not implemented.
+- **Gateway MAC is hardcoded at compile time**, not dynamically discovered. It is now the *only* per-pair constant left in a leaf sketch — everything else became generic when the mesh dropped lane numbers for A/B sides. The intended end state is node identity in NVS plus a **pair button** on the board: an unprovisioned node stays quiet until a human presses it, which is what removes the house-wide-reboot race that made naive discovery unsafe in the first place. Designed, not built.
+- **Gateway failure/replacement is designed, not built.** The flow above depends on nodes having a stored gateway MAC to verify a claimed successor against, which only exists once the item above lands. Note also that the compute node has to be the one that declares the incumbent dead — a degraded-but-alive gateway would otherwise leave two boards claiming one identity.
 - **`CMD_RESPOT` is a stub.** It logs and acks but doesn't do anything yet.
-- **`MSG_COMMAND` still isn't ack/retry-tracked**, even with dual-transport delivery and the exactly-once dedup requirement covering duplicate execution. A command lost on both transports simultaneously still silently never arrives — dual-sending reduces that risk, it doesn't eliminate it. Extending `MSG_ACK` to cover commands, not just `MSG_STATUS`, is the natural fix and doesn't need another protocol redesign.
+- **`MSG_COMMAND` still isn't ack/retry-tracked.** Duplicate *execution* is handled — both the gateway and the pinsetter now drop the second copy of a dual-sent message by keying on the whole message, so a command runs exactly once however the two transports interleave. Delivery is the remaining gap: A command lost on both transports simultaneously still silently never arrives — dual-sending reduces that risk, it doesn't eliminate it. Extending `MSG_ACK` to cover commands, not just `MSG_STATUS`, is the natural fix and doesn't need another protocol redesign.
+
+## Contributing
+
+Issues and PRs are welcome — the project is GPLv3, so contributions are too.
+
+A few conventions in this codebase are load-bearing rather than stylistic, and the [repo README](https://github.com/nicholas-a-hall/openlanelink#contributing) covers them properly: installing the shared firmware library before anything will compile, the order to change the wire protocol in, why the two `protocol.py` files are deliberately *not* identical any more, and how to verify a change end to end with no hardware attached.
+
+The short version of the design rules: nodes are dumb and never correlate across readings; the mesh has no lane numbers; one message struct on every transport; `NodeMessage` stays exactly 72 bytes; and each lane pair needs its own isolated RS-485 segment. Each of those exists because breaking it caused a real bug, and the reasoning is written up in `firmware/PROTOCOL.md` and `firmware/HANDOFF.md` rather than left to be rediscovered.
 
 ---
 
