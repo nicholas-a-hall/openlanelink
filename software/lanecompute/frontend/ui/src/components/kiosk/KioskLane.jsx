@@ -318,10 +318,11 @@ function KioskLaneInner() {
                 thing the clock is counting. */}
             <div className="k-block k-block--session">
               <div className="k-actions">
-                {/* Colour carries meaning here, not emphasis: cyan is an
-                    ordinary action, crimson ends something, and amber is
-                    used exactly once — the call that stops the clock — so
-                    it still means something when it appears. */}
+                {/* Colour and weight both carry meaning. Cyan filled is an
+                    ordinary action; outlined is a consequential one — amber
+                    for the call that stops the clock, crimson for the two
+                    ways to end something. Filled reads as "press me",
+                    outlined as "mean it". */}
                 <ActionButton
                   glyph="⏱" label={extendLabel.label} sublabel={extendLabel.sublabel}
                   accent={{ fill: K.primary, ink: K.primaryInk }}
@@ -354,7 +355,7 @@ function KioskLaneInner() {
 
                 <ActionButton
                   glyph="⚠" label="Call for help" sublabel="Stops your clock"
-                  accent={{ fill: K.yellow, ink: K.yellowInk }}
+                  accent={{ fill: K.yellow, ink: K.yellowInk }} outlined
                   disabled={lane.awaitingStaff}
                   onClick={() => report(actions.requestAssistance("problem"), "Help is on the way")}
                 />
