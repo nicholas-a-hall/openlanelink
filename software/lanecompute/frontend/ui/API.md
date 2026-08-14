@@ -29,6 +29,7 @@ render is a pure function of these props.
 | `tickerMessages` | `{ id, text, color?: 'accent'\|'warn' }[]` | no | `[]` | Merged with two built-in lane-stat items |
 | `tickerEnabled` | `boolean` | no | `false` | Ticker renders nothing at all (no layout space claimed) unless true |
 | `celebrationAssets` | `{ [eventType: string]: string }` | no | active theme's `assets.celebrationAssets` | Event type → `.webm` URL (alpha channel). No matching key = no-op. Pass this prop only to override a specific venue's clips without forking the theme — see [§2.7](#27-assets) |
+| `tickerLead` | `ReactNode` | no | — | Rendered at the **left of the bottom ticker strip**, sharing its row (the sponsor slot). `DisplayLane` fixes the strip's height and the lead's width, so a lead sized by its own content can't steal height from the scorecards |
 | `children` | `ReactNode` | no | — | Rendered in a slot **below the topbar, above the scorecards**. Each top-level child should be ≥10% of screen height (see [§2.3](#23-layout-constants)). Currently: extended-stats panel + mini-ad |
 
 Layout is otherwise fixed: topbar → `children` slot → bowler scorecards
@@ -47,6 +48,118 @@ patching `useLaneFeed`. If you need to test it in isolation, the
 straightforward fix is splitting it the same way the display side is
 split (`ControlLane` presentational + a new `ControlLanePage` container) —
 not done yet.
+
+### `KioskLane` (`components/kiosk/KioskLane.jsx`)
+
+The 9:16 bowler terminal on the lane console — the openlanescheduler kiosk,
+migrated. Same architectural shape as `ControlLane` (reads `useParams()`,
+calls `useLaneFeed(laneId)`, takes no props) and the same caveat about not
+being drivable from hand-authored data.
+
+**This screen does not use `lib/theme.js` or `lib/themes.js`.** It has its
+own token set in `components/kiosk/theme.jsx`, on CSS variables, with a
+light and a dark scheme (`KioskThemeProvider` + `useKioskTheme`; follows
+`prefers-color-scheme` until someone toggles it, then persists). Three
+reasons, all of which apply to this screen and not the overhead display:
+its palette is read at arm's length in a lit room rather than from thirty
+feet in a dark house, so every colour is checked against the surface it
+sits on; it uses **one** elevation system, flat (fill + a 1px border, never
+a shadow pair), where the screen previously mixed neumorphic and flat
+surfaces at the same depth; and neumorphism is shadow-on-a-single-base
+colour, which doesn't survive inversion — flat is what makes a light kiosk
+possible. Layout rules that need media queries (the orientation split, the
+modal geometry) are real CSS in that file rather than inline styles.
+
+Two things changed in the move and are worth not undoing: it's **one lane
+per device** (everything else here already is, and so is the compute node's
+API), and its countdown is **this compute node's own session clock**
+(`state_machine/session.py`) rather than arithmetic over a walk-in record
+living in openlanescheduler — so the lane keeps timing correctly with that
+service down. Staff are still summoned through openlanescheduler's existing
+service-call pipeline; that MQTT edge is the only thing the two systems
+still share.
+
+Every control on it is a REST call on the compute node's public API (§3.4)
+— there's no private kiosk channel. That's what lets the siteserver bus
+activate a lane later and land in exactly the state a bowler tapping Start
+would have produced.
+
+**Three states, in order** — the terminal never asks for everything at once:
+
+1. **Idle** (`!lane.active`) — pick by-the-hour or by-the-game and a length,
+   then *Start session*. Nothing but that choice is collected here.
+2. **Roster** (`lane.active && lane.gameType == null`) — session live and the
+   clock already running, but no scoresheet. Names go to the server as
+   they're entered (the session exists, so the roster is real lane state,
+   not something held on one tablet), then *Start game*. Disabled at zero
+   bowlers. *End session* is available here so a lane started by mistake is
+   escapable without bowling a frame.
+3. **Playing** — the full lane screen.
+
+`gameType` is null only before a session's *first* game, so ending a game
+returns to state 3 with "play another game", never back to 2. State 2 is
+skipped entirely when the activation already carried a roster.
+
+**The main screen holds only what a bowler reaches for**: the clock, who's
+up, and the actions. Everything else — the roster, score editing — is
+behind a button. With up to twelve bowlers, a permanent roster panel pushed
+the pinsetter and the staff calls off the bottom of a portrait console, and
+editing a roster is something a party does once and then rarely.
+
+**Layout** is three blocks (`.k-block--status` / `--game` / `--session` in
+`theme.jsx`). Portrait stacks them in that order. Landscape (≥860px wide
+and not taller than it is wide) puts *status* and *session* in a left rail
+and *game* alongside — so the controls that act on the session sit directly
+under the clock that's counting it, and the game's own controls get the
+width. The two columns end level: the grid stretches, and `.k-grow` on the
+summary card absorbs the slack. The action grids and the clock size
+themselves with **container** queries, not viewport ones: the same
+`.k-actions` renders two columns in a 400px rail and four in an 800px one,
+and the clock's type scales against its own box so the times can't overflow
+when the layout goes two-column.
+
+`TWO_COLUMN_QUERY` in `theme.jsx` is the single definition of that
+breakpoint — the CSS interpolates it and `useTwoColumn()` matches on it, so
+a component that changes *shape* there (only `RosterSummary` today) can't
+drift out of step with the layout that changes *size*.
+
+Sub-components, all kiosk-local:
+
+| Component | Props |
+|---|---|
+| `SessionClock` | `session: Session \| null`, `active: boolean`, `held: boolean` — wall clock + countdown; see §3.2.1 for the freeze-vs-count-down rule |
+| `RosterModal` | `bowlers`, `maxBowlers`, `currentBowlerId`, `startMode?`, `onAdd`, `onRename`, `onHandicap`, `onRemove`, `onSetTurn?`, `onStartGame?`, `onEndSession?`, `onClose` — the whole roster in a dialog: rename, handicap, remove, and **hand the turn to a bowler** (the ▶ chip; filled and inert for whoever's up, absent in `startMode` since there's no rotation yet, disabled for anyone who's finished). `startMode` turns it into state 2's "who's playing" step: same list, same calls, different footer |
+| `RosterSummary` (same file) | `bowlers`, `currentBowlerId`, `onOpen` — **two shapes**, chosen by `useTwoColumn()`: a one-line tappable card in portrait (so the actions below it stay reachable without scrolling), and a full standings panel in landscape carrying `.k-grow`, which is the element that absorbs the leftover column height and is what makes the two columns end level. The extra height buys real information (every bowler's frame, handicap and total), not whitespace |
+| `ScoreEditModal` | `bowlers`, `currentBowlerId`, `selectedBowler`, `onPickBowler`, `onPickFrame`, `onBack`, `onClose` — pick-who then pick-which-frame, behind an explicit *Edit score* tap. Frames are **one per row in a scrolling column**, not the control screen's ten-across strip: ten frames across a tablet gives each ~35px, fine to read, far too small to aim at. Rows for frames the bowler hasn't reached are disabled — the backend can't record into them (§3.4). `zIndex` 50, under the pin picker's 60, so closing the picker returns to the frame list |
+| `PinPickerModal` | `bowler`, `frameIdx`, `onCommit`, `onClose` — the kiosk's pin deck |
+| `ActionButton` | `glyph`, `label`, `sublabel?`, `accent?: {fill, ink}`, `disabled?`, `onClick` — `accent` takes a fill/ink **pair** so a caller can't put unreadable text on a coloured fill in one scheme |
+| `Modal` + `ModalButton` (`Modal.jsx`) | the dialog shell everything above is built on: centred, content-sized, capped by the viewport, Escape to close |
+| `AddBowlerModal` (`Modals.jsx`) | name **and** handicap in one dialog. Making the handicap a second trip meant it was usually skipped, which is how a handicap league ends up scored scratch |
+| `TextPromptModal` / `NumberPadModal` / `ConfirmModal` (`Modals.jsx`) | prompts for a name, a number, and a yes/no |
+| `Toasts` + `useToasts()` | transient confirmations; `report(promise, okMessage)` is the standard "fire an action, toast the outcome" helper |
+
+Only the pin picker's *rules* are shared with `ControlLane`
+(`components/shared/scoresheet/useBallCorrection.js` — which ball you're on,
+how many pins may be selected, what advancing does). The two screens render
+their own decks around it, because they no longer share a visual system:
+sharing the rendered modal would have meant one of them looking wrong.
+
+That hook also exports `pinsDownBefore(frame, ballIdx)` and returns
+`alreadyDown`: **which pins an earlier ball this frame already took down**,
+so correcting ball 2 can't count a pin twice. It's derived from
+`frames[].pinMasks` (mirroring the backend's own
+`standing_mask_before_next_ball`, including the reset-on-clear rule), and
+returns `null` — not an empty set — when any earlier ball has no per-pin
+detail. Unknown is not "nothing fell"; with `null` the picker constrains
+nothing rather than claiming knowledge it doesn't have. The backend
+rejects a double-counted pin regardless (`_validate_frame_masks`), but a
+control that permits an impossible selection and only objects on submit is
+a worse control.
+
+`styles.js` holds the kiosk's own `raised`/`recessed`/`filled` helpers —
+bigger radii and deeper shadows than `ControlLane`'s pair, because
+everything on this screen is meant to be pressed. Same Midnight Arcade
+tokens either way.
 
 ### Display sub-components (reusable individually)
 
@@ -197,6 +310,8 @@ stay as plain constants rather than living in `layout`:
 |---|---|---|---|
 | `MIN_COMPONENT_VH` | `lib/themes.js` | `10` | Every distinct content block ≥ 10% of screen height |
 | `MAX_BOWLER_SHEET_VH` | `DisplayLane.jsx` | `20` | A bowler sheet never exceeds 20% of screen height |
+| `STATS_SLOT_VH` | `DisplayLane.jsx` | `6.5` | Height of the `children` slot. Deliberately **below** the `MIN_COMPONENT_VH` floor — that floor is for things people read, and ball speed / strike counts are glanceable extras that were competing with the scorecards. A fixed height, not a minimum, so it can't grow back |
+| `FRAME_LABEL_CLEARANCE_VH` | `DisplayLane.jsx` | `3.4` | Band reserved under the stats row for `FrameSpotlight`'s frame labels, which hang above the sheet region and would otherwise draw straight over it. One constant feeds both the reserve and the label offset |
 | `MAX_VISIBLE_BOWLERS` | `DisplayLane.jsx` | `6` | Fixed, not measured — see `HANDOFF.md` |
 | `REORDER_DELAY_MS` | `DisplayLane.jsx` | `3000` | Minimum pause after a bowler's turn ends before the queue reorders |
 
@@ -234,8 +349,14 @@ node has no ad-scheduling backend, only game state.
   name: string,
   frames: Frame[],        // see below — length is gt.frameCount, 10 for every
                            // game type today (ten-pin/no-tap/duckpin)
-  totalScore: number,     // explicit -- the client never scans `frames` for the
-                           // last resolved runningTotal itself
+  totalScore: number,     // SCRATCH -- explicit; the client never scans `frames` for
+                           // the last resolved runningTotal itself
+  handicap: number,       // pins added to level a handicap game; 0 for a scratch
+                           // bowler. Never enters scoring math (game_state.py's
+                           // Bowler.handicap explains why) -- it's applied once, here
+  totalWithHandicap: number,  // totalScore + handicap, precomputed for the same
+                               // reason totalScore is: no screen decides which of the
+                               // three "the score" is by doing arithmetic itself
   currentFrame: number | null,  // 1-indexed frame this bowler is on; null once
                                  // THIS bowler's own game is complete
   currentBall: number | null,   // 1-indexed -- which ball of currentFrame is next
@@ -246,6 +367,16 @@ node has no ad-scheduling backend, only game state.
                                  // not just the active one's.
 }
 ```
+
+**Which total a screen shows**: `displayTotal(bowler)` in `lib/scoring.js`
+picks `totalWithHandicap` when there's a handicap and `totalScore`
+otherwise, and **every screen uses it** — the overhead sheet, the ScoreBug,
+the kiosk's summary and its score-edit list. It exists so they can't
+disagree about who's winning. Handicap never enters frame arithmetic (a
+frame's `runningTotal` is always scratch, which is what makes the
+pins-per-frame column add up), so the handicapped figure appears only as a
+bowler's total. Wherever it does, show the `+N` alongside: two bowlers on
+the same displayed number are not tied if one is carrying 40 pins.
 
 **Frame format changed from this doc's original (pre-backend) design.**
 It used to be a raw array of pin counts, with running totals/completion
@@ -302,12 +433,77 @@ returns as `lane`, and what `DisplayLane`'s `lane` prop expects:
   laneId: string | number,
   bowlers: Bowler[],            // roster order; see 3.1
   gameType: string | null,      // e.g. "ten_pin" | "no_tap" | "duckpin" (state_machine/game_types.json), null before a game starts
+  gameEnded: boolean,           // the current scoresheet was closed by "End game" -- it's
+                                 // still readable, it just isn't taking balls
+  maxBowlers: number,           // backend-owned lane capacity (game_state.
+                                 // MAX_BOWLERS_PER_LANE). Never hardcode a copy: a house
+                                 // that seats more per lane changes one env var
   machineState: string,         // state_machine/state_machine.py's State enum: "IDLE" | "READY" |
                                  // "BALL_IN_FLIGHT" | "AWAITING_PINFALL" | "PINSETTER_BUSY" | "GAME_COMPLETE"
   currentBowlerId: string | null,   // whose turn it is
+  active: boolean,              // backend `laneActive` -- is this lane in play at all (i.e. does it
+                                 // have a live session). FALSE is an idle lane waiting to be
+                                 // activated. Branch on this, never on `session != null`, which
+                                 // stays truthy after a session ends
+  session: Session | null,      // see 3.2.1; survives being ended so a terminal can still show
+                                 // what just finished
+  assistance: AssistanceRequest[],  // OPEN staff summons only; see 3.2.2
+  awaitingStaff: boolean,       // specifically "a problem is open" -- the thing that holds the
+                                 // clock. A pending server call leaves this false
   ballSpeed: number | null,     // mph, most recent delivery (from a "ball_speed" WS event)
   connected: boolean,           // is the WebSocket to the compute node currently open
   events: LaneEvent[],          // newest first, capped at 6 -- client-synthesized (see 3.5), not from the backend directly
+}
+```
+
+#### 3.2.1 `Session`
+
+From `state_machine/session.py`. A session is the lane being sold: it spans
+many games, and only activate/deactivate begin and end one.
+
+```ts
+{
+  id: string,
+  mode: "timed" | "games",
+  source: "kiosk" | "siteserver" | "api",   // who activated the lane; provenance only
+  startedAtMs: number,
+  endedAtMs: number | null,
+  ended: boolean,
+  durationMs: number | null,     // timed only, INCLUDING extensions
+  endsAtMs: number | null,       // timed only -- wall-clock instant it runs out
+  remainingMs: number | null,    // timed only, floored at 0
+  expired: boolean,
+  gamesPurchased: number | null, // games mode only, including extensions
+  gamesStarted: number,
+  gamesRemaining: number | null, // games mode only
+  extensions: number,
+  paused: boolean,               // the clock is HELD (a problem is open)
+  pausedAtMs: number | null,
+  pausedTotalMs: number,         // banked hold time, including any in progress
+}
+```
+
+**Rendering the countdown** (`components/kiosk/SessionClock.jsx` does this):
+when `paused`, render `remainingMs` verbatim — the backend freezes it, and
+it is the only field that holds still. When running, count down to
+`endsAtMs` instead of subtracting elapsed time locally; every second spent
+held pushes `endsAtMs` later, which is exactly the behavior you want and
+exactly what local accumulation would get wrong. Per-game sessions have no
+clock at all — show `gamesRemaining`.
+
+#### 3.2.2 `AssistanceRequest`
+
+From `state_machine/assistance.py`. Only open requests appear in
+`lane.assistance`; resolved ones are history and nothing renders them.
+
+```ts
+{
+  id: string,
+  kind: "problem" | "service",   // problem holds the session clock; service doesn't
+  reason: string | null,
+  requestedAtMs: number,
+  resolvedAtMs: number | null,
+  open: boolean,
 }
 ```
 
@@ -360,17 +556,37 @@ mock, see `HANDOFF.md`):
   `DisplayLanePage.jsx`, currently `bowlers.length > 0 && machineState !==
   "GAME_COMPLETE"`).
 
-### 3.4 Actions (control tablet → backend)
+### 3.4 Actions (control tablet / bowler terminal → backend)
 
-What `useLaneFeed` returns as `actions` — the verbs `ControlLane` calls.
-Unlike the WebSocket (3.5, read-only), these are REST calls straight to
-`state_machine/api.py`:
+What `useLaneFeed` returns as `actions` — the verbs `ControlLane` and
+`KioskLane` call. Unlike the WebSocket (3.5, read-only), these are REST
+calls straight to `state_machine/api.py`.
+
+**Every action resolves to `{ ok: true, data }` or `{ ok: false, error }`
+— none of them reject.** Failures are logged to the event log either way,
+but the bowler terminal needs to toast a real "that didn't work" at the
+point of the tap (a 503 because the UART bridge is down is the one bowlers
+will actually hit), and an action that rejected would need a `.catch()` at
+every one of ~12 call sites or produce unhandled rejections at the ones
+that forgot.
 
 | Action | Signature | REST call |
 |---|---|---|
-| `addBowler` | `(name: string) => void` | `POST /api/lanes/{lane}/bowlers {name}` |
-| `removeBowler` | `(id: string) => void` | `DELETE /api/lanes/{lane}/bowlers/{id}` |
-| `correctBall` | `(bowlerId, frameIdx, ballIdx, pins) => void` | `PUT /api/lanes/{lane}/bowlers/{id}/score` — `frameIdx`/`ballIdx` stay 0-indexed at this call site (matches `CorrectionModal`'s own indexing) and are translated to the backend's 1-indexed `{frame_number, ball_in_frame, pinfall}` inside `useLaneFeed`, the one place that needs to know about the difference |
+| `addBowler` | `(name, handicap?) => Promise<Result>` | `POST /api/lanes/{lane}/bowlers {name, handicap}` — the handicap travels with the name (a bowler and their handicap arrive together in practice, and add-then-patch left a window where the second call could fail and put a handicap bowler on the board as scratch). 409 at `lane.maxBowlers` |
+| `renameBowler` | `(id, name) => Promise<Result>` | `PUT /api/lanes/{lane}/bowlers/{id} {name}` |
+| `setHandicap` | `(id, handicap) => Promise<Result>` | `PUT /api/lanes/{lane}/bowlers/{id}/handicap {handicap}` |
+| `removeBowler` | `(id) => Promise<Result>` | `DELETE /api/lanes/{lane}/bowlers/{id}` |
+| `setCurrentBowler` | `(id) => Promise<Result>` | `PUT /api/lanes/{lane}/turn {bowler_id}` — hand the turn to someone else when the rotation and the people on the lane have drifted apart. Records nothing; 409 if there's no game, they aren't in its rotation, or they've finished |
+| `correctBall` | `(bowlerId, frameIdx, ballIdx, pins, pinMask?) => Promise<Result>` | `PUT /api/lanes/{lane}/bowlers/{id}/score` — `frameIdx`/`ballIdx` stay 0-indexed at this call site (matches the pin picker's own indexing) and are translated to the backend's 1-indexed `{frame_number, ball_in_frame, pinfall, pin_mask}` inside `useLaneFeed`, the one place that needs to know about the difference. Overwrites a recorded ball **or records the next one in a frame**; a frame the bowler hasn't reached 400s, which is why the frame list only enables frames that have balls or are the bowler's `currentFrame`. **Send `pinMask`** (bit N−1 = pin N) whenever the caller knows which pins fell — the pickers always do, and it's what populates `frames[].pinMasks` so a later ball in the same frame can grey out pins already down |
+| `activateLane` | `({mode?, minutes?, games?, bowlers?}) => Promise<Result>` | `POST /api/lanes/{lane}/activate` (always `source: "kiosk"` from here) — opens the session. Starts the first game too only if `bowlers` is passed; the kiosk doesn't, so its lane lands in the "who's playing" step |
+| `deactivateLane` | `() => Promise<Result>` | `POST /api/lanes/{lane}/deactivate` — ends the session, lane back to idle |
+| `extendSession` | `({minutes?, games?}) => Promise<Result>` | `POST /api/lanes/{lane}/session/extend` — "extend time" or "play another game" depending on the session's mode |
+| `startGame` | `() => Promise<Result>` | `POST /api/lanes/{lane}/games {}` — the *next* scoresheet only |
+| `endGame` | `() => Promise<Result>` | `POST /api/lanes/{lane}/games/end` |
+| `requestAssistance` | `(kind, reason?) => Promise<Result>` | `POST /api/lanes/{lane}/assistance {kind, reason}` — `"problem"` holds the clock, `"service"` doesn't |
+| `resolveAssistance` | `(id) => Promise<Result>` | `POST /api/lanes/{lane}/assistance/{id}/resolve` |
+| `cyclePinsetter` | `() => Promise<Result>` | `POST /api/lanes/{lane}/pinsetter/cycle` — 503 when the gateway link is down |
+| `rerackPinsetter` | `() => Promise<Result>` | `POST /api/lanes/{lane}/pinsetter/rerack` — same |
 
 `setPinsetterRunning` is gone — it paused the old simulator's fake
 delivery interval, which has no real-backend equivalent (no "pause
@@ -379,11 +595,13 @@ input isn't really a thing). `ControlLane`'s pinsetter-live toggle was
 replaced with a real WebSocket connection-status indicator (`lane.connected`)
 instead.
 
-Starting a game (`POST /api/lanes/{lane}/games`, optional
-`{game_type}`, default `"ten_pin"`) isn't exposed as a user-facing action
-at all — `useLaneFeed` calls it automatically: immediately once bowlers
-exist on an idle lane, and a few seconds after `machineState` reaches
-`GAME_COMPLETE` (product decision — no manual "next game" button today).
+**`useLaneFeed` no longer starts games by itself.** It used to POST
+`/games` automatically — immediately once bowlers existed on an idle lane,
+and a few seconds after `GAME_COMPLETE`. That was right when nothing else
+could start one, but a lane is now activated explicitly and every game
+after the first is a deliberate tap, so an auto-restart would fight both:
+ending a game would instantly un-end itself. Starting a game is something a
+caller does, never something the hook does behind their back.
 
 ### 3.5 WebSocket envelope (as implemented)
 
@@ -395,9 +613,17 @@ One connection per lane: `useLaneFeed` opens `ws://…/ws/display/{laneId}`
 ```json
 { "type": "state", "lane": 7, "data": { /* full Lane snapshot -- game_state.py + state_machine.py, see 3.2 minus laneId/connected/events which the client adds */ } }
 { "type": "event", "lane": 7, "event": "ball_speed", "data": { "mph": 14.2, "intervalMs": 812 } }
-{ "type": "event", "lane": 7, "event": "assistance_requested", "data": { "reason": "..." } }
+{ "type": "event", "lane": 7, "event": "assistance_requested", "data": { "id": "...", "kind": "problem" | "service", "reason": "..." } }
+{ "type": "event", "lane": 7, "event": "assistance_resolved", "data": { "id": "...", "kind": "problem" | "service" } }
+{ "type": "event", "lane": 7, "event": "lane_activated", "data": { "sessionId": "...", "source": "kiosk" | "siteserver" | "api" } }
+{ "type": "event", "lane": 7, "event": "lane_deactivated", "data": {} }
 { "type": "event", "lane": 7, "event": "pinsetter_cycle_requested" | "pinsetter_rerack_requested", "data": {} }
 ```
+
+Every one of those events is also followed by a full `state` broadcast, so
+the events are for the log/animation layer only — never the thing a screen
+derives session or assistance state from. Read `lane.session` /
+`lane.assistance` for that.
 
 There is no `takeover` message type — `useTakeoverFeed` is a fully
 separate, still-mocked concern (3.3); nothing server-side schedules

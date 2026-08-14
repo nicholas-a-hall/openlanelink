@@ -25,13 +25,48 @@ read-only) for state, real REST for every mutating action. See `API.md`
 ad-scheduling backend at all, only game state, so there's nothing real to
 connect it to yet. It's called out below same as before.
 
+**The bowler kiosk moved here from openlanescheduler (2026-08-13).** New
+`/kiosk/:laneId` route (`components/kiosk/`), backed by two new backend
+modules: `session.py` (lane activation and the countdown) and a real
+lifecycle on `assistance.py` (problem vs server call, and a resolve that
+restarts a held clock). The lane's time is this compute node's own now —
+openlanescheduler is no longer consulted for it, only notified when staff
+are wanted. Its own `kiosk/` app is untouched and still runs;
+decommissioning it is a separate change.
+
+One behavior change worth knowing about if you're chasing "why didn't the
+game restart": **`useLaneFeed` no longer auto-starts games.** See `API.md`
+§3.4 — an idle lane now waits to be activated, and every game after the
+first is an explicit tap. An auto-restart would have made "End game"
+impossible to observe.
+
+Three things found and fixed while wiring this up, all pre-existing:
+- `assistance.py` published to MQTT inline from an async request handler.
+  paho's `connect()` is synchronous, so against an unreachable broker it
+  blocked the **whole event loop** — every lane this compute node serves —
+  for a measured 4.4s, which is 4.4s of a bowler standing at the terminal
+  with no acknowledgement that their call for help registered. The
+  notification now goes to a background thread; the request returns in ~3ms.
+  Whether the dashboard hears about it has never had any bearing on whether
+  the lane's own state is right.
+- `ControlLane` passed `lane.currentFrame`/`lane.currentBall` into its
+  scoresheet. Those fields have never existed on the lane snapshot (only
+  per bowler), so the "you're here" ball highlight silently never rendered.
+- `edit_score` validated each ball as 0–10 but never the frame's total, so
+  correcting ball 1 to a 9 with a 2 already recorded behind it stored an
+  11-pin frame. It now re-checks the whole resulting frame and 400s. This
+  only became easy to hit once bowlers could correct their own scores.
+
 ## Routes
 
 - `/display/:laneId` — overhead monitor (16:9), one lane's bowlers only
-- `/control/:laneId` — bowler control tablet (9:16 portrait)
-- `/` — dev-only launcher listing all 8 lanes with links to both; not part
-  of the real deployment (each physical device is pointed straight at its
-  own URL, no device ever visits `/`)
+- `/kiosk/:laneId` — bowler terminal on the lane console (9:16 portrait):
+  start/end a game, extend or end the session, names, handicaps, call for
+  help or a server, cycle/re-rack the pinsetter
+- `/control/:laneId` — scoresheet / manual-correction tablet (9:16 portrait)
+- `/` — dev-only launcher listing all 8 lanes with links to all three; not
+  part of the real deployment (each physical device is pointed straight at
+  its own URL, no device ever visits `/`)
 
 ## File layout
 
@@ -58,9 +93,13 @@ src/
     theme.js                  OLD static Midnight Arcade tokens — still
                                used by ControlLane only (see Known gaps)
     useLaneFeed.js             REAL per-lane connection to the compute
-                               node — WebSocket for state, REST for
-                               actions (addBowler/removeBowler/
-                               correctBall), auto-reconnect. Shape:
+                               node — WebSocket for state, REST for every
+                               action (roster, handicap, score correction,
+                               lane activate/deactivate, game start/end,
+                               session extend, staff calls, pinsetter),
+                               auto-reconnect. Actions resolve to
+                               { ok, data } / { ok, error }, never reject.
+                               Starts no games on its own. Shape:
                                { lane, actions } — see API.md §3.2/3.4
     useTakeoverFeed.js         ⚠ DUMMY BACKEND STAND-IN — mock schedule
                                for full-screen ad/video/message
@@ -69,6 +108,37 @@ src/
   components/
     control/ControlLane.jsx    9:16 tablet: roster, turn rotation,
                                tap-a-frame pin-picker correction modal
+    kiosk/
+      KioskLane.jsx            bowler terminal — the migrated
+                               openlanescheduler kiosk. Three states in
+                               order: pick hours/games → enter the roster →
+                               play (API.md §1). Start/end game, extend or
+                               end session, names, handicaps, call for help
+                               / a server, cycle / re-rack, edit a score
+      theme.jsx                the kiosk's OWN tokens: light + dark on CSS
+                               variables, plus every layout rule that needs
+                               a media query (orientation split, modal
+                               geometry). Not lib/theme.js — see API.md §1
+      SessionClock.jsx         wall clock + countdown; freezes (and says
+                               why) while a problem is open — API.md §3.2.1
+      RosterModal.jsx          the roster, in a dialog, + RosterSummary (the
+                               one-line card the main screen shows instead)
+      ScoreEditModal.jsx       behind an explicit "Edit score" tap: pick a
+                               bowler, then a frame, one per scrolling row
+      PinPickerModal.jsx       the kiosk's pin deck
+      Modal.jsx                the dialog shell: centred, content-sized,
+                               Escape to close
+      ActionButton.jsx         one big two-line tap target
+      Modals.jsx               text prompt, number pad, confirm
+      Toasts.jsx               transient outcome toasts + useToasts()
+      styles.js                flat panel/card/sunken/filled helpers and the
+                               duration/clock formatters
+    shared/scoresheet/
+      useBallCorrection.js     the correction RULES, headless — shared by
+                               the kiosk's pin deck and ControlLane's. The
+                               two screens don't share a visual system, so
+                               they render their own decks around it
+      CorrectionModal.jsx      ControlLane's pin deck (Midnight Arcade)
     shared/Chrome.jsx          Clock, LivePill (used by display)
     display/
       DisplayLane.jsx          the big one — pure presentational 16:9
@@ -120,15 +190,33 @@ authoring a descriptor object (`{ preset, overrides, layout, assets,
 ... }`) — no picker/editor UI exists yet, that's still open work.
 
 Every display component reads colors via `useTheme()`, never a static
-import. **`ControlLane.jsx` was never migrated onto this system — it
-still imports the old static `lib/theme.js`.** Bringing the control
-tablet onto the same theme system is an open item, not done.
+import. **Neither tablet screen was migrated onto this system —
+`ControlLane.jsx` and everything in `components/kiosk/` still import the
+old static `lib/theme.js`.** Bringing them onto the same theme system is an
+open item, not done; the kiosk was deliberately built to match
+`ControlLane`'s existing convention rather than half-migrate one screen.
 
 ## Layout rules (product requirements, enforced in code)
 
-- Every distinct content block (ticker, each bowler sheet, the slot below
-  the scores) is **at least 10% of screen height** — `MIN_COMPONENT_VH`
-  in `themes.js`.
+- Every distinct content block a bowler is meant to *read* (the bottom
+  ticker strip, each bowler sheet) is **at least 10% of screen height** —
+  `MIN_COMPONENT_VH` in `themes.js`.
+  - **Exception: the stats slot** (`STATS_SLOT_VH = 6.5`). Ball speed and
+    strike/spare counts are glanceable extras, not something anyone reads
+    from thirty feet; at 10vh they competed with the scorecards and took
+    height the sheets could use. Fixed height, not a minimum.
+- The bottom strip is **one row**: the sponsor slot (`tickerLead`) on the
+  left, the ticker filling the rest. Its height is fixed by `DisplayLane`
+  so a sponsor image's own aspect ratio can't inflate it at the
+  scorecards' expense.
+- **Frame labels persist.** Every frame up to and including the live one is
+  numbered above the sheet region (`FrameSpotlight`) so a bowler can tell
+  which frame a score belongs to — a single travelling label only answers
+  that for the current frame. Earlier frames drop the fill and the border
+  but stay legible; deference is not the same as being too faint to read
+  at distance (`T.muted` is ~2:1 against this background and vanishes).
+  They hang *above* the sheets, so `FRAME_LABEL_CLEARANCE_VH` reserves a
+  band under the stats row for them.
 - Bowler sheets cap at **20% of screen height** — `MAX_BOWLER_SHEET_VH` in
   `DisplayLane.jsx` — so a 1-2 bowler lane doesn't blow a single card up
   to fill the whole screen.
@@ -248,12 +336,21 @@ placeholder SVG; `celebrationAssets` defaults to `{}` (no-op).
   `game_type: "duckpin"` when starting a game will under-render frame
   boxes for anyone who takes a 3rd ball in a regular frame. Ten-pin and
   no-tap (still 2-then-3) render correctly.
-- **No manual "start next game" control.** `useLaneFeed` auto-starts one
-  instead (see above) — a deliberate product decision, not an oversight,
-  but there's also no way to pick a non-default `game_type` from the UI
-  yet (the REST call supports it; nothing in `ControlLane` exposes it).
-- **ControlLane still on the old theme system** (`lib/theme.js`), not
-  `lib/themes.js` — inconsistent with the display side.
+- **No `game_type` picker anywhere in the UI.** Both `POST /games` and
+  `/activate` accept one; nothing exposes it, so every game is ten-pin.
+  (Starting a game IS a real control now — the kiosk's — it just always
+  starts the default type.)
+- **The siteserver message bus doesn't exist.** A lane can only be
+  activated from the kiosk or a direct REST call today. The backend is
+  already shaped for it (`api.activate_lane()` is the shared entry point
+  both paths use), but there's no bus and no consumer.
+- **The kiosk trusts whoever's standing at it.** Anyone can end a session,
+  extend time, or clear a staff call — there's no staff PIN or any other
+  gate, matching the compute node's existing "anyone on the lane's network
+  is trusted" posture (see `api.py`'s CORS note). Worth revisiting before
+  extend-time is tied to anything that bills.
+- **Both tablet screens still on the old theme system** (`lib/theme.js`),
+  not `lib/themes.js` — inconsistent with the display side.
 
 ## Reference material this was built from
 
@@ -279,8 +376,9 @@ review notes from when those were first surveyed.
 3. Adapt frame-box rendering for duckpin's variable regular-frame ball
    count (see "Known gaps") — needed before duckpin is actually usable
    from the UI, not just the backend.
-4. Expose `game_type` selection in `ControlLane` (currently REST-only).
-5. Migrate `ControlLane` onto `lib/themes.js`.
+4. Expose `game_type` selection in the UI (currently REST-only) — the
+   kiosk's Start panel is the natural place now that it exists.
+5. Migrate `ControlLane` and `components/kiosk/` onto `lib/themes.js`.
 6. Source real ad/video/celebration media once available; wire ad/video
    content into `MOCK_MINI_AD`/the takeover `SCRIPT` (still per-venue
    content, not theme-owned), and celebration clips into each preset's
@@ -291,3 +389,9 @@ review notes from when those were first surveyed.
    editor that produces the descriptor object `resolveTheme()` already
    accepts) — the data model supports arbitrary custom themes today, but
    nothing surfaces that to a non-developer yet.
+9. Build the siteserver message bus and its consumer, so a lane sold at
+   the front desk activates itself. The backend entry point it should call
+   already exists (`api.activate_lane()`); do NOT reimplement the
+   activate → new game → begin sequence in the consumer.
+10. Decommission `software/openlanescheduler/kiosk/` once the terminal
+    here is proven on real hardware. Deliberately left running for now.

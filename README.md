@@ -16,13 +16,13 @@ See the [full background and concept](https://nicholas-a-hall.github.io/openlane
 |---|---|
 | [`firmware/`](firmware) | ESP32 firmware for gateway, pinsetter, fouling, and speed nodes — ESP-NOW mesh + RS-485 fallback transport |
 | `hardware/` | Hardware references and board notes (placeholder — empty for now) |
-| [`software/lanecompute/`](software/lanecompute) | Per-lane compute node: FastAPI scoring/state-machine backend, vision (pin detection), and the React bowler/overhead UI |
+| [`software/lanecompute/`](software/lanecompute) | Per-lane compute node: FastAPI scoring/state-machine backend, lane sessions, vision (pin detection), and the React overhead display, bowler terminal, and scoring UIs |
 | [`software/openlanescheduler/`](software/openlanescheduler) | Lane reservation and maintenance scheduler — manager dashboard, lane kiosks, mechanics module |
 | [`docs/`](docs) | Source for the GitHub Pages site (architecture, mesh protocol, message format, API surface, real-installation walkthrough) |
 
 ## Current state
 
-**Today:** pinsetter control, ESP-NOW transport, RS-485 redundant transport, gateway registration/recovery, lane-local game state, camera pin detection, node health monitoring, REST/WebSocket API, bowler and overhead UIs.
+**Today:** pinsetter control, ESP-NOW transport, RS-485 redundant transport, gateway registration/recovery, lane-local game state, lane sessions with a bowler terminal (start/end games, extend time, handicaps, staff calls), camera pin detection, node health monitoring, REST/WebSocket API, bowler and overhead UIs.
 
 **In progress:**  dynamic gateway discovery, complete foul/speed integration, production field testing.
 
