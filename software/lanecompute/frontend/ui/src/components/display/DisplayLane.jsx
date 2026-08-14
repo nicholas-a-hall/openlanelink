@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ballGlyph, gameComplete } from "../../lib/scoring.js";
+import { ballGlyph, displayTotal, gameComplete } from "../../lib/scoring.js";
 import { MIN_COMPONENT_VH, ThemeProvider, useTheme } from "../../lib/themes.js";
 import { Clock, LivePill } from "../shared/Chrome.jsx";
 import Ticker from "./Ticker.jsx";
@@ -14,6 +14,25 @@ import TakeoverLayer from "./layers/TakeoverLayer.jsx";
    shrink below its natural size; the ticker, topbar, and the slot below
    the scores hold their ground. */
 const MAX_BOWLER_SHEET_VH = 20;
+
+/* Height of the slot above the scores (the stats panel).
+   Deliberately BELOW the MIN_COMPONENT_VH floor the rest of the screen
+   keeps: that floor exists so no block is too small to read from thirty
+   feet, and it's the right rule for anything anyone is meant to look at.
+   Ball speed and a strike count aren't -- they're glanceable extras, and
+   at 10vh they were competing with the scorecards for attention and
+   taking height the sheets could use. A fixed height rather than a
+   minimum, so it can't quietly grow back. */
+const STATS_SLOT_VH = 6.5;
+
+/* Vertical band reserved above the bowler sheets for FrameSpotlight's frame
+   labels, which hang above the sheet region rather than inside it (they
+   label a whole column across every sheet, so they can't live in any one
+   of them). Reserved as margin under the stats row rather than left to
+   chance: the labels are absolutely positioned and will happily draw on
+   top of whatever is above them, which is exactly what they did. One
+   constant so the reserve and the offset can't drift apart. */
+const FRAME_LABEL_CLEARANCE_VH = 3.4;
 
 /* The bowler-sheet container's height never changes — it's a fixed flex
    region, not something that grows with roster size — so how many sheets
@@ -82,7 +101,13 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
   const { T, elevation } = useTheme();
   const card = elevation("card");
   const inset = elevation("inset");
-  const total = bowler.totalScore;
+  // The handicapped total where there is one -- the frame boxes to its left
+  // already show scratch running totals, so this column showing scratch too
+  // meant a handicap entered on the terminal never appeared anywhere on the
+  // overhead screen at all. The "+N" chip below keeps the two readable as
+  // what they are rather than looking like a disagreement.
+  const total = displayTotal(bowler);
+  const handicap = bowler.handicap ?? 0;
   // Width-driven font-size ceiling, computed per actual content length
   // rather than a fixed worst-case constant -- "BOB" gets to render much
   // larger than "TWELVECHARNAM" would, instead of both being capped
@@ -204,8 +229,9 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
           shrunk-but-still-slightly-too-big score clips instead of
           spilling into the frame grid next to it. */}
       <div style={{
-        width: "clamp(60px,9vw,140px)", flexShrink: 0, display: "flex", alignItems: "center",
-        justifyContent: "flex-start", overflow: "hidden", containerType: "inline-size",
+        width: "clamp(60px,9vw,140px)", flexShrink: 0, display: "flex",
+        flexDirection: "column", alignItems: "flex-start", justifyContent: "center",
+        overflow: "hidden", containerType: "inline-size",
       }}>
         <div style={{
           fontFamily: T.fontMono,
@@ -221,6 +247,27 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
         }}>
           {total}
         </div>
+        {handicap > 0 && (
+          /* Labelled, not just "+40". An unlabelled delta next to a score
+             on an overhead board is ambiguous -- it reads as easily as
+             "gained 40 pins this frame" as it does "carries 40 handicap",
+             and those are very different claims about the game. The word
+             is what makes the number mean one thing. */
+          <div style={{
+            display: "flex", alignItems: "baseline", gap: "0.3em",
+            // Sized off the same cqh the total uses so the pair scales
+            // together, capped small: this annotates the number above it,
+            // it isn't a second score competing with it.
+            fontSize: "min(clamp(9px,12cqh,22px), 22cqw)",
+            lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden",
+          }}>
+            <span style={{
+              fontFamily: T.fontMono, fontSize: "0.72em", fontWeight: 700,
+              color: T.muted, letterSpacing: "0.08em",
+            }}>HDCP</span>
+            <span style={{ fontFamily: T.fontMono, fontWeight: 700, color: T.green }}>+{handicap}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -244,6 +291,18 @@ const BowlerSheet = forwardRef(function BowlerSheet({ bowler, isUp }, ref) {
  * everything else in this overlay is fully transparent and
  * `pointerEvents: "none"` so it never blocks interaction with what's
  * beneath it.
+ *
+ * Frame labels persist. Every frame up to and including the current one is
+ * numbered, not just the live one — a bowler looking at a row of scores
+ * needs to know WHICH frame the 47 was bowled in, and a single travelling
+ * label only answers that for the frame they're on right now. The current
+ * frame's label stays emphasised so the highlight still reads at a glance;
+ * the ones behind it drop back to a quiet number. Frames not yet reached
+ * stay unlabelled, so the labelled run doubles as a progress indicator.
+ *
+ * The labels hang ABOVE the sheet region (they belong to a column, not to
+ * any one sheet), which means they draw over whatever sits above — hence
+ * FRAME_LABEL_CLEARANCE_VH, reserved as margin under the stats row.
  */
 function FrameSpotlight({ frameIdx }) {
   const { T } = useTheme();
@@ -256,27 +315,60 @@ function FrameSpotlight({ frameIdx }) {
     }}>
       <div style={{ width: "clamp(70px,11vw,170px)", flexShrink: 0 }} />
       <div style={{ flex: 1, display: "flex", gap: "0.5vw", padding: "0 clamp(3px,0.5vw,8px)" }}>
-        {Array.from({ length: 10 }).map((_, fi) => (
-          <div key={fi} style={{
-            position: "relative",
-            flex: fi === 9 ? "1.4" : "1",
-            background: fi === frameIdx ? "rgba(64,144,216,0.1)" : "transparent",
-            borderLeft: fi === frameIdx ? "1px solid rgba(64,144,216,0.45)" : "none",
-            borderRight: fi === frameIdx ? "1px solid rgba(64,144,216,0.45)" : "none",
-            borderRadius: 8,
-            transition: "background 0.4s, border-color 0.4s",
-          }}>
-            {fi === frameIdx && (
-              <div style={{
-                position: "absolute", top: "-2.6vh", left: "50%", transform: "translateX(-50%)",
-                whiteSpace: "nowrap", fontFamily: T.fontMono, fontWeight: 700,
-                fontSize: "clamp(8px,1.1vh,13px)", letterSpacing: "0.1em", color: T.blue,
-                background: "rgba(64,144,216,0.16)", border: "1px solid rgba(64,144,216,0.45)",
-                borderRadius: 4, padding: "0.2vh 0.7vw",
-              }}>FRAME {frameIdx + 1}</div>
-            )}
-          </div>
-        ))}
+        {Array.from({ length: 10 }).map((_, fi) => {
+          const isCurrent = fi === frameIdx;
+          const isBowled = fi < frameIdx;
+          return (
+            <div key={fi} style={{
+              position: "relative",
+              flex: fi === 9 ? "1.4" : "1",
+              background: isCurrent ? "rgba(64,144,216,0.1)" : "transparent",
+              borderLeft: isCurrent ? "1px solid rgba(64,144,216,0.45)" : "none",
+              borderRight: isCurrent ? "1px solid rgba(64,144,216,0.45)" : "none",
+              borderRadius: 8,
+              transition: "background 0.4s, border-color 0.4s",
+            }}>
+              {(isCurrent || isBowled) && (
+                <div style={{
+                  position: "absolute",
+                  // Sits inside the band reserved under the stats row.
+                  top: `-${FRAME_LABEL_CLEARANCE_VH - 0.5}vh`,
+                  left: "50%", transform: "translateX(-50%)",
+                  whiteSpace: "nowrap", fontFamily: T.fontMono, fontWeight: 700,
+                  fontSize: "clamp(8px,1.1vh,13px)", letterSpacing: "0.1em",
+                  borderRadius: 4, padding: "0.2vh 0.7vw",
+                  transition: "color 0.4s, background 0.4s, border-color 0.4s",
+                  ...(isCurrent
+                    ? {
+                        color: T.blue,
+                        background: "rgba(64,144,216,0.16)",
+                        border: "1px solid rgba(64,144,216,0.45)",
+                      }
+                    : {
+                        // Quieter than the live frame, but still genuinely
+                        // readable from across a house -- these exist so a
+                        // bowler can tell which frame a score belongs to,
+                        // and a label nobody can read at distance does not
+                        // do that. T.muted (the obvious "dim" token) is
+                        // about 2:1 against this background and disappears.
+                        // Deference comes from dropping the fill and the
+                        // border, not from being too faint to read.
+                        color: T.text,
+                        opacity: 0.68,
+                        background: "transparent",
+                        border: "1px solid transparent",
+                      }),
+                }}>
+                  {/* The word only on the live frame -- ten repetitions of
+                      "FRAME" is noise, and a bare number under a numbered
+                      column is unambiguous once the pattern is established
+                      by the labelled one. */}
+                  {isCurrent ? `FRAME ${fi + 1}` : fi + 1}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div style={{ width: "clamp(60px,9vw,140px)", flexShrink: 0 }} />
     </div>
@@ -304,7 +396,7 @@ function FrameSpotlight({ frameIdx }) {
  * new one and transition that away — a plain reorder has no native way
  * to animate, this is the standard technique for it.
  */
-function BowlerQueue({ bowlers, activeId, allComplete, celebrating = false }) {
+function BowlerQueue({ bowlers, activeId, allComplete, celebrating = false, turnSetSeq = 0 }) {
   const [queue, setQueue] = useState(() => bowlers.map((b) => b.id));
   const [displayActiveId, setDisplayActiveId] = useState(activeId ?? null);
   const nodeRefs = useRef(new Map());
@@ -340,6 +432,28 @@ function BowlerQueue({ bowlers, activeId, allComplete, celebrating = false }) {
       return [...kept, ...added];
     });
   }, [bowlers]);
+
+  /* A turn somebody SET (rather than one that advanced because a ball was
+     thrown) lands at once — cancelling any hand-off already waiting.
+
+     The delay below exists to keep a just-finished bowler's score readable
+     for a moment. A deliberate turn change has no such score to protect:
+     someone pressed a button and is watching the screen to see whether it
+     worked, and up to REORDER_DELAY_MS of the wrong bowler staying
+     highlighted (longer if a celebration happens to be playing) reads as
+     the change having been ignored.
+
+     Only the highlight moves. The queue order is left exactly as it is:
+     the reorder below is "whoever just finished goes to the back", which
+     is meaningful for a completed turn and would be arbitrary shuffling
+     here — nobody finished anything. */
+  useEffect(() => {
+    if (turnSetSeq === 0) return;
+    clearTimeout(pendingRef.current);
+    pendingRef.current = null;
+    setDisplayActiveId(activeIdRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnSetSeq]);
 
   // Whenever the display is behind reality (activeId has moved on from
   // whoever we're currently showing as active), start — or continue — the
@@ -440,7 +554,7 @@ function BowlerQueue({ bowlers, activeId, allComplete, celebrating = false }) {
   );
 }
 
-function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], tickerEnabled = false, celebrationAssets, children }) {
+function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], tickerEnabled = false, celebrationAssets, tickerLead, children }) {
   const { T, layout, assets } = useTheme();
   // The theme owns a default asset bundle (celebration clips, webfont
   // import) as part of its visual identity; an explicit prop still wins,
@@ -482,7 +596,7 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${T.border}`, paddingBottom: "0.8vh", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "1.2vmin" }}>
             <span style={{ fontFamily: "'Orbitron','Barlow Condensed',sans-serif", fontSize: "clamp(14px,2.6vmin,32px)", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              OVERHEAD SCORING, LANE {laneId}
+              LANE {laneId}
             </span>
             <span style={{
               fontFamily: T.fontMono, fontSize: "clamp(8px,1.1vmin,14px)", padding: "0.3vmin 1vmin", borderRadius: 6,
@@ -502,7 +616,11 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
             stats, mini-ads, anything else) — DisplayLane doesn't decide
             what goes here, the caller does, via children. */}
         {children && (
-          <div style={{ minHeight: `${MIN_COMPONENT_VH}vh`, flexShrink: 0, display: "flex", gap: "1vw" }}>
+          <div style={{
+            height: `${STATS_SLOT_VH}vh`, flexShrink: 0, display: "flex", gap: "1vw",
+            // Clearance for the frame labels that hang above the sheets.
+            marginBottom: `${FRAME_LABEL_CLEARANCE_VH}vh`,
+          }}>
             {children}
           </div>
         )}
@@ -535,7 +653,7 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
                 No bowlers on this lane
               </div>
             ) : (
-              <BowlerQueue bowlers={lane.bowlers} activeId={up?.id ?? null} allComplete={allComplete} celebrating={celebrating} />
+              <BowlerQueue bowlers={lane.bowlers} activeId={up?.id ?? null} allComplete={allComplete} celebrating={celebrating} turnSetSeq={lane.turnSetSeq ?? 0} />
             )}
             {allComplete && lane.bowlers.length > 0 && (
               <div style={{
@@ -546,9 +664,34 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
           </div>
         </div>
 
-        {/* ticker lives at the very bottom of the screen, and only takes
-            up space at all when explicitly enabled */}
-        <Ticker items={tickerItems} enabled={tickerEnabled} />
+        {/* Bottom strip: the ticker, with `tickerLead` (the sponsor slot)
+            beside it on the LEFT rather than stacked above the scores.
+            One strip instead of two horizontal bands means the scorecards
+            -- the actual point of the screen -- get the height back, and
+            the two things that are both "venue messaging" sit together
+            instead of bracketing the game. The lead is fixed-width and the
+            ticker takes the rest; both only claim space when they have
+            something to show. */}
+        {(tickerLead || tickerEnabled) && (
+          /* Height fixed to the strip's own floor rather than left to the
+             content: the sponsor image's natural aspect ratio would
+             otherwise set it, and a taller image would quietly eat the
+             scorecards' height. The lead fills this box (see MiniAd's
+             objectFit) instead of dictating it. */
+          <div style={{
+            height: `${MIN_COMPONENT_VH}vh`, flexShrink: 0,
+            display: "flex", alignItems: "stretch", gap: "0.8vw",
+          }}>
+            {tickerLead && (
+              <div style={{ width: "clamp(110px,13vw,220px)", flexShrink: 0, display: "flex" }}>
+                {tickerLead}
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+              <Ticker items={tickerItems} enabled={tickerEnabled} />
+            </div>
+          </div>
+        )}
 
         <CelebrationLayer latestEvent={lane.events[0] || null} assets={resolvedCelebrationAssets} onPlayingChange={setCelebrating} />
         <TakeoverLayer activeTakeover={activeTakeover} lane={lane} laneId={laneId} activeBowlerId={up?.id} />
@@ -582,13 +725,15 @@ function DisplayLaneInner({ laneId, lane, activeTakeover, tickerMessages = [], t
  *     Defaults to the active theme's own asset bundle (useTheme().assets
  *     .celebrationAssets, see lib/themes.js) if omitted; pass this prop
  *     only to override a specific venue's clips without forking the theme
+ *   tickerLead?: ReactNode                        — rendered at the LEFT of
+ *     the bottom ticker strip, sharing its row (the sponsor slot). Sized by
+ *     this component to a fixed narrow column; the ticker takes the rest.
  *   children?: ReactNode                          — rendered in a slot
  *     above the bowler scores, below the topbar (extended stats for the
- *     active bowler, mini-ads, anything else) — each top-level child
- *     should size itself to at least 10% of screen height to match the
- *     rest of the screen's density rule
+ *     active bowler, anything else). Deliberately shorter than the 10%
+ *     density floor the rest of the screen keeps — see STATS_SLOT_VH
  */
-export default function DisplayLane({ laneId, lane, theme, activeTakeover = null, tickerMessages, tickerEnabled, celebrationAssets, children }) {
+export default function DisplayLane({ laneId, lane, theme, activeTakeover = null, tickerMessages, tickerEnabled, celebrationAssets, tickerLead, children }) {
   return (
     <ThemeProvider theme={theme}>
       <DisplayLaneInner
@@ -598,6 +743,7 @@ export default function DisplayLane({ laneId, lane, theme, activeTakeover = null
         tickerMessages={tickerMessages}
         tickerEnabled={tickerEnabled}
         celebrationAssets={celebrationAssets}
+        tickerLead={tickerLead}
       >
         {children}
       </DisplayLaneInner>

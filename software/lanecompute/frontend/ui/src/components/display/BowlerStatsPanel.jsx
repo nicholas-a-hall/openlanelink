@@ -1,24 +1,31 @@
 import { countSpares, countStrikes, pinfall } from "../../lib/scoring.js";
 import { useTheme } from "../../lib/themes.js";
 
+/* One stat, laid out on a single line rather than value-over-label.
+
+   This panel is background information -- ball speed, a strike count -- on
+   a screen whose job is the scorecards. It used to be a row of raised
+   cards with glowing numbers, which read as the most important thing up
+   there. Now: no card, no glow, label and value side by side so the whole
+   row fits the shorter slot (STATS_SLOT_VH in DisplayLane.jsx), and colour
+   used only on the value so the stats are still distinguishable at a
+   glance without shouting. */
 function Tile({ label, value, color }) {
-  const { T, elevation } = useTheme();
+  const { T } = useTheme();
   return (
     <div style={{
-      ...elevation("card"),
-      flex: 1, minWidth: 0, height: "100%", display: "flex", flexDirection: "column",
-      alignItems: "center", justifyContent: "center", gap: "0.3vh",
-      borderRadius: "clamp(6px,0.8vmin,12px)",
+      flex: 1, minWidth: 0, height: "100%",
+      display: "flex", alignItems: "center", justifyContent: "center", gap: "0.6vmin",
+      borderLeft: `1px solid ${T.border}`, padding: "0 0.6vw", overflow: "hidden",
     }}>
-      {/* 3vh/36px measured ~12% taller than its box in practice -- same
-          font-metrics-exceed-lineHeight:1 gap as BowlerSheet's total score
-          (see DisplayLane.jsx) -- reduced until a live overflow scan came
-          back clean rather than estimated. */}
-      <div style={{
-        fontFamily: T.fontDisplay, fontSize: "clamp(14px,2.6vh,32px)", fontWeight: 700, color: color || T.text,
-        lineHeight: 1, textShadow: `0 0 14px ${(color || T.text)}44`, overflow: "hidden",
-      }}>{value}</div>
-      <div style={{ fontFamily: T.fontMono, fontSize: "clamp(6px,0.9vh,11px)", color: T.muted, letterSpacing: "0.12em" }}>{label}</div>
+      <span style={{
+        fontFamily: T.fontMono, fontSize: "clamp(6px,1.05vh,12px)", color: T.muted,
+        letterSpacing: "0.1em", whiteSpace: "nowrap",
+      }}>{label}</span>
+      <span style={{
+        fontFamily: T.fontDisplay, fontSize: "clamp(11px,1.9vh,22px)", fontWeight: 700,
+        color: color || T.text, lineHeight: 1, whiteSpace: "nowrap", overflow: "hidden",
+      }}>{value}</span>
     </div>
   );
 }
@@ -34,15 +41,15 @@ function Tile({ label, value, color }) {
  *   ballSpeed: number | null
  */
 export default function BowlerStatsPanel({ bowler, ballSpeed }) {
-  const { T, elevation } = useTheme();
+  const { T } = useTheme();
 
   if (!bowler) {
     return (
       <div style={{
-        ...elevation("panel"),
-        height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-        borderRadius: "clamp(6px,0.7vmin,12px)", color: T.muted, fontFamily: T.fontMono, fontSize: "clamp(8px,1vh,12px)",
-      }}>No active bowler</div>
+        height: "100%", display: "flex", alignItems: "center",
+        color: T.dim, fontFamily: T.fontMono, fontSize: "clamp(6px,1.05vh,12px)",
+        letterSpacing: "0.1em",
+      }}>NO ACTIVE BOWLER</div>
     );
   }
 
@@ -50,18 +57,19 @@ export default function BowlerStatsPanel({ bowler, ballSpeed }) {
   const spares = countSpares(bowler.frames);
   const pins = pinfall(bowler.frames);
 
+  // One row, not a heading over a grid: the whole panel is one strip now,
+  // so the bowler's name sits inline with the stats it belongs to.
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", gap: "0.4vh" }}>
+    <div style={{ height: "100%", display: "flex", alignItems: "center", overflow: "hidden" }}>
       <div style={{
-        fontFamily: T.fontMono, fontSize: "clamp(6px,0.78vh,10px)", color: T.muted,
-        letterSpacing: "0.12em", flexShrink: 0,
+        fontFamily: T.fontMono, fontSize: "clamp(6px,1.05vh,12px)", color: T.dim,
+        letterSpacing: "0.1em", flexShrink: 0, paddingRight: "0.8vw",
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "22vw",
       }}>{bowler.name.toUpperCase()} · THIS GAME</div>
-      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: "0.6vw" }}>
-        <Tile label="BALL SPEED" value={ballSpeed ? `${ballSpeed} mph` : "—"} color={T.blue} />
-        <Tile label="PINFALL" value={pins} color={T.red} />
-        <Tile label="STRIKES" value={strikes} color={T.yellow} />
-        <Tile label="SPARES" value={spares} color={T.green} />
-      </div>
+      <Tile label="SPEED" value={ballSpeed ? `${ballSpeed} mph` : "—"} color={T.blue} />
+      <Tile label="PINFALL" value={pins} color={T.red} />
+      <Tile label="STRIKES" value={strikes} color={T.yellow} />
+      <Tile label="SPARES" value={spares} color={T.green} />
     </div>
   );
 }
