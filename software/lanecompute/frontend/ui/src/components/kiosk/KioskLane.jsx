@@ -96,7 +96,7 @@ function Chip({ label, selected, onClick }) {
       aria-pressed={selected}
       style={{
         flex: 1, padding: "15px 0", fontSize: 15, fontWeight: 800, letterSpacing: 0.3,
-        ...(selected ? filled(K.accent, K.accentInk, 12) : { background: K.panel, color: K.text }),
+        ...(selected ? filled(K.primary, K.primaryInk, 12) : { background: K.panel, color: K.text }),
       }}
     >{label}</button>
   );
@@ -282,24 +282,30 @@ function KioskLaneInner() {
               />
 
               <div className="k-actions">
+                {/* Same rule as the session block: blue asks for something
+                    or opens a thing, gold touches the machine. */}
                 <ActionButton
                   glyph="👤" label="Bowlers" sublabel="Names, turn & handicaps"
+                  accent={{ fill: K.primary, ink: K.primaryInk }}
                   onClick={() => setRosterOpen(true)}
                 />
 
                 <ActionButton
                   glyph="✎" label="Edit score" sublabel="Fix a wrong frame"
+                  accent={{ fill: K.primary, ink: K.primaryInk }}
                   disabled={bowlers.length === 0}
                   onClick={() => setEditing({ bowlerId: null })}
                 />
 
                 <ActionButton
                   glyph="⚙" label="Cycle pinsetter" sublabel="Reset the pins"
+                  accent={{ fill: K.yellow, ink: K.yellowInk }}
                   onClick={() => report(actions.cyclePinsetter(), "Pinsetter cycling…")}
                 />
 
                 <ActionButton
                   glyph="⟳" label="Re-rack" sublabel="Full fresh rack"
+                  accent={{ fill: K.yellow, ink: K.yellowInk }}
                   onClick={() => report(actions.rerackPinsetter(), "Re-racking…")}
                 />
               </div>
@@ -311,17 +317,35 @@ function KioskLaneInner() {
                 thing the clock is counting. */}
             <div className="k-block k-block--session">
               <div className="k-actions">
+                {/* Colour carries meaning here, not emphasis: blue asks for
+                    something (more time, a server), red ends something, and
+                    yellow is the one call that stops the clock. */}
                 <ActionButton
                   glyph="⏱" label={extendLabel.label} sublabel={extendLabel.sublabel}
+                  accent={{ fill: K.primary, ink: K.primaryInk }}
                   onClick={() => report(
                     actions.extendSession(lane.session?.mode === "games" ? { games: 1 } : {}),
                     lane.session?.mode === "games" ? "Another game added" : "More time added"
                   )}
                 />
 
+                <ActionButton
+                  glyph="🔔" label="Call a server" sublabel="Food & drinks"
+                  accent={{ fill: K.primary, ink: K.primaryInk }}
+                  onClick={() => report(actions.requestAssistance("service"), "A server is on the way")}
+                />
+
+                <ActionButton
+                  glyph="⚠" label="Call for help" sublabel="Stops your clock"
+                  accent={{ fill: K.yellow, ink: K.yellowInk }}
+                  disabled={lane.awaitingStaff}
+                  onClick={() => report(actions.requestAssistance("problem"), "Help is on the way")}
+                />
+
                 {gameInProgress ? (
                   <ActionButton
                     glyph="⏹" label="End game" sublabel="Keeps your lane"
+                    accent={{ fill: K.stop, ink: K.stopInk }}
                     onClick={() => setSheet({ kind: "endGame" })}
                   />
                 ) : (
@@ -333,22 +357,13 @@ function KioskLaneInner() {
                   />
                 )}
 
-                <ActionButton
-                  glyph="⚠" label="Call for help" sublabel="Stops your clock"
-                  accent={{ fill: K.yellow, ink: K.yellowInk }}
-                  disabled={lane.awaitingStaff}
-                  onClick={() => report(actions.requestAssistance("problem"), "Help is on the way")}
-                />
-
-                <ActionButton
-                  glyph="🔔" label="Call a server" sublabel="Food & drinks"
-                  onClick={() => report(actions.requestAssistance("service"), "A server is on the way")}
-                />
-
                 <button
                   className="k-btn k-actions-wide"
                   onClick={() => setSheet({ kind: "endSession" })}
-                  style={{ padding: "16px 0", fontSize: 15, fontWeight: 800, letterSpacing: 0.5, color: K.textDim }}
+                  style={{
+                    padding: "16px 0", fontSize: 15, fontWeight: 800, letterSpacing: 0.5,
+                    background: K.stop, borderColor: K.stop, color: K.stopInk,
+                  }}
                 >End session</button>
               </div>
             </div>

@@ -22,7 +22,7 @@ export function TextPromptModal({ title, label, initial = "", confirmLabel = "Sa
       footer={
         <>
           <ModalButton onClick={onClose}>Cancel</ModalButton>
-          <ModalButton tone="accent" wide disabled={!valid} onClick={commit}>{confirmLabel}</ModalButton>
+          <ModalButton tone="primary" wide disabled={!valid} onClick={commit}>{confirmLabel}</ModalButton>
         </>
       }
     >
@@ -78,7 +78,7 @@ export function AddBowlerModal({ maxHandicap = 300, onCommit, onClose }) {
       footer={
         <>
           <ModalButton onClick={onClose}>Cancel</ModalButton>
-          <ModalButton tone="accent" wide disabled={!valid} onClick={commit}>Add</ModalButton>
+          <ModalButton tone="primary" wide disabled={!valid} onClick={commit}>Add</ModalButton>
         </>
       }
     >
@@ -142,7 +142,7 @@ export function NumberPadModal({ title, initial = 0, max = 300, onCommit, onClos
       footer={
         <>
           <ModalButton onClick={onClose}>Cancel</ModalButton>
-          <ModalButton tone="accent" wide disabled={tooBig} onClick={() => { onCommit(value); onClose(); }}>Save</ModalButton>
+          <ModalButton tone="primary" wide disabled={tooBig} onClick={() => { onCommit(value); onClose(); }}>Save</ModalButton>
         </>
       }
     >

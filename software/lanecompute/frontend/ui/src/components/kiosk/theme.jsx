@@ -72,6 +72,21 @@ const THEME_CSS = `
      glow went missing the first time. */
   --k-glow-good:   rgba(53, 192, 122, 0.5);
   --k-glow-bad:    rgba(255, 107, 87, 0.5);
+
+  /* The committing action. A desaturated blue, not the accent: red is the
+     loudest colour on the screen and it was carrying selection, confirmation
+     AND danger at once, so nothing it marked meant anything in particular.
+     Red is now reserved for destructive or alarming things; choosing and
+     confirming are this. */
+  --k-primary:     #456f92;
+  --k-primary-ink: #eef4fa;
+
+  /* Ending something. A desaturated red -- these are the deliberate,
+     reversible-by-staff stops (end the game, hand the lane back), not the
+     alarms --k-danger is for, so they read as "this finishes something"
+     rather than "something is wrong". */
+  --k-stop:        #a9584c;
+  --k-stop-ink:    #fbf0ee;
 }
 
 [data-kiosk="light"] {
@@ -104,6 +119,12 @@ const THEME_CSS = `
      with against a near-white page than against a near-black one. */
   --k-glow-good:   rgba(21, 122, 71, 0.42);
   --k-glow-bad:    rgba(179, 39, 26, 0.42);
+
+  --k-primary:     #3f6d92;
+  --k-primary-ink: #ffffff;
+
+  --k-stop:        #9c4436;
+  --k-stop-ink:    #ffffff;
 }
 `;
 
@@ -421,4 +442,8 @@ export const K = {
   danger: "var(--k-danger)",
   glowGood: "var(--k-glow-good)",
   glowBad: "var(--k-glow-bad)",
+  primary: "var(--k-primary)",
+  primaryInk: "var(--k-primary-ink)",
+  stop: "var(--k-stop)",
+  stopInk: "var(--k-stop-ink)",
 };

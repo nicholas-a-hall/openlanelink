@@ -75,6 +75,9 @@ export default function Modal({ title, onClose, footer, children, maxWidth = 480
    travels with the fill -- see styles.js's filled(). */
 export function ModalButton({ tone = null, wide = false, disabled = false, onClick, children }) {
   const fills = {
+    // The committing action. Deliberately quieter than the accent -- see
+    // --k-primary in theme.jsx for why red stopped being the default here.
+    primary: { background: K.primary, color: K.primaryInk, border: `1px solid ${K.primary}` },
     accent: { background: K.accent, color: K.accentInk, border: `1px solid ${K.accent}` },
     green: { background: K.green, color: K.greenInk, border: `1px solid ${K.green}` },
     danger: { background: K.danger, color: K.accentInk, border: `1px solid ${K.danger}` },

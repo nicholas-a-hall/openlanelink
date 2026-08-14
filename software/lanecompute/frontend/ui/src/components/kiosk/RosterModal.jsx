@@ -148,7 +148,7 @@ export default function RosterModal({
           </ModalButton>
         </>
       ) : (
-        <ModalButton tone="accent" wide onClick={onClose}>Done</ModalButton>
+        <ModalButton tone="primary" wide onClick={onClose}>Done</ModalButton>
       )}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>

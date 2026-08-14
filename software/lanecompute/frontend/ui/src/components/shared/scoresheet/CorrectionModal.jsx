@@ -56,7 +56,7 @@ function PinPicker({ knockedDown, alreadyDown, onChange }) {
 }
 
 export default function CorrectionModal({ bowler, frameIdx, ballIdx = 0, onCommit, onClose }) {
-  const { knocked, alreadyDown, togglePin, commitSelected, commitGutter } =
+  const { knocked, alreadyDown, maxSelectable, clearLabel, togglePin, commitSelected, commitClear, commitGutter } =
     useBallCorrection({ bowler, frameIdx, ballIdx, onCommit, onClose });
 
   return (
@@ -83,7 +83,12 @@ export default function CorrectionModal({ bowler, frameIdx, ballIdx = 0, onCommi
           <button onClick={commitGutter} style={{
             flex: 1, padding: "12px 0", fontSize: 13, fontWeight: 700, color: T.muted,
             border: "none", cursor: "pointer", ...raised(11),
-          }}>Gutter (0)</button>
+          }}>Gutter</button>
+          {/* Whole-rack shortcut: strike on a fresh rack, spare otherwise. */}
+          <button onClick={commitClear} style={{
+            flex: 1, padding: "12px 0", fontSize: 13, fontWeight: 800, color: T.green,
+            border: "none", cursor: "pointer", ...raised(11),
+          }}>{clearLabel} ({maxSelectable})</button>
           <button
             onClick={commitSelected}
             style={{
@@ -92,7 +97,7 @@ export default function CorrectionModal({ bowler, frameIdx, ballIdx = 0, onCommi
               background: `linear-gradient(145deg, ${T.red}, #b83020)`,
               boxShadow: `4px 4px 10px ${T.shadowD}`,
             }}
-          >Confirm {knocked.size} pin{knocked.size === 1 ? "" : "s"}</button>
+          >Confirm {knocked.size}</button>
         </div>
       </div>
     </div>

@@ -35,7 +35,7 @@ function Pin({ pin, down, already, onToggle }) {
         ...(already
           ? { background: K.sunken, color: K.textFaint, textDecoration: "line-through" }
           : down
-            ? { background: K.accent, borderColor: K.accent, color: K.accentInk }
+            ? { background: K.primary, borderColor: K.primary, color: K.primaryInk }
             : { background: K.panel, color: K.text }),
       }}
     >{pin}</button>
@@ -43,7 +43,7 @@ function Pin({ pin, down, already, onToggle }) {
 }
 
 export default function PinPickerModal({ bowler, frameIdx, ballIdx = 0, onCommit, onClose }) {
-  const { knocked, alreadyDown, togglePin, commitSelected, commitGutter } =
+  const { knocked, alreadyDown, maxSelectable, clearLabel, togglePin, commitSelected, commitClear, commitGutter } =
     useBallCorrection({ bowler, frameIdx, ballIdx, onCommit, onClose });
 
   return (
@@ -53,9 +53,15 @@ export default function PinPickerModal({ bowler, frameIdx, ballIdx = 0, onCommit
       maxWidth={420}
       footer={
         <>
-          <ModalButton onClick={commitGutter}>Gutter (0)</ModalButton>
-          <ModalButton tone="accent" wide onClick={commitSelected}>
-            Confirm {knocked.size} pin{knocked.size === 1 ? "" : "s"}
+          <ModalButton onClick={commitGutter}>Gutter</ModalButton>
+          {/* The two whole-rack outcomes, one tap instead of ten. Which one
+              this is depends on whether the ball faces a fresh rack, not on
+              which ball it is — see useBallCorrection's freshRack. */}
+          <ModalButton onClick={commitClear}>
+            {clearLabel} ({maxSelectable})
+          </ModalButton>
+          <ModalButton tone="primary" wide onClick={commitSelected}>
+            Confirm {knocked.size}
           </ModalButton>
         </>
       }
