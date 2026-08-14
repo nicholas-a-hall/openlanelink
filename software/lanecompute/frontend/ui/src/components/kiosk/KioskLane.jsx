@@ -282,8 +282,9 @@ function KioskLaneInner() {
               />
 
               <div className="k-actions">
-                {/* Same rule as the session block: blue asks for something
-                    or opens a thing, gold touches the machine. */}
+                {/* Same rule as the session block: cyan for ordinary
+                    actions, amber reserved for the one call that stops the
+                    clock, crimson for endings. */}
                 <ActionButton
                   glyph="👤" label="Bowlers" sublabel="Names, turn & handicaps"
                   accent={{ fill: K.primary, ink: K.primaryInk }}
@@ -299,13 +300,13 @@ function KioskLaneInner() {
 
                 <ActionButton
                   glyph="⚙" label="Cycle pinsetter" sublabel="Reset the pins"
-                  accent={{ fill: K.yellow, ink: K.yellowInk }}
+                  accent={{ fill: K.primary, ink: K.primaryInk }}
                   onClick={() => report(actions.cyclePinsetter(), "Pinsetter cycling…")}
                 />
 
                 <ActionButton
                   glyph="⟳" label="Re-rack" sublabel="Full fresh rack"
-                  accent={{ fill: K.yellow, ink: K.yellowInk }}
+                  accent={{ fill: K.primary, ink: K.primaryInk }}
                   onClick={() => report(actions.rerackPinsetter(), "Re-racking…")}
                 />
               </div>
@@ -317,9 +318,10 @@ function KioskLaneInner() {
                 thing the clock is counting. */}
             <div className="k-block k-block--session">
               <div className="k-actions">
-                {/* Colour carries meaning here, not emphasis: blue asks for
-                    something (more time, a server), red ends something, and
-                    yellow is the one call that stops the clock. */}
+                {/* Colour carries meaning here, not emphasis: cyan is an
+                    ordinary action, crimson ends something, and amber is
+                    used exactly once — the call that stops the clock — so
+                    it still means something when it appears. */}
                 <ActionButton
                   glyph="⏱" label={extendLabel.label} sublabel={extendLabel.sublabel}
                   accent={{ fill: K.primary, ink: K.primaryInk }}
