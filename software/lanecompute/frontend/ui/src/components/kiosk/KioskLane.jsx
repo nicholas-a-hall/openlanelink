@@ -390,11 +390,22 @@ function KioskLaneInner() {
           bowler={correctingBowler}
           frameIdx={correcting.frameIdx}
           ballIdx={correcting.ballIdx}
-          // pinMask must be forwarded, not dropped: it's what populates
-          // frames[].pinMasks, and without it a later ball in the same
-          // frame has no way to know which pins are already down.
-          onCommit={(frameIdx, ballIdx, pins, pinMask) =>
-            report(actions.correctBall(correctingBowler.id, frameIdx, ballIdx, pins, pinMask), "Score updated")}
+          /* pinMask must be forwarded, not dropped: it's what populates
+             frames[].pinMasks, and without it a later ball in the same
+             frame has no way to know which pins are already down.
+
+             Accepting an edit closes the whole flow, back to the lane
+             screen — not just the picker. Correcting a score is a task
+             someone came here to do; once it's done they want the lane
+             again, not to be left holding the frame list they passed
+             through to get here. Dismissing the picker with ✕ still drops
+             back to that list, because that's a change of mind mid-task,
+             not the end of one. */
+          onCommit={(frameIdx, ballIdx, pins, pinMask) => {
+            report(actions.correctBall(correctingBowler.id, frameIdx, ballIdx, pins, pinMask), "Score updated");
+            setCorrecting(null);
+            setEditing(null);
+          }}
           onClose={() => setCorrecting(null)}
         />
       )}
