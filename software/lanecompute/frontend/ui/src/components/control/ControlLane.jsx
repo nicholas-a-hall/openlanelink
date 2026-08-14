@@ -263,7 +263,7 @@ export default function ControlLane() {
       {editing && editingBowler && (
         <CorrectionModal
           bowler={editingBowler} frameIdx={editing.frameIdx}
-          onCommit={(frameIdx, ballIdx, pins) => actions.correctBall(editingBowler.id, frameIdx, ballIdx, pins)}
+          onCommit={(frameIdx, ballIdx, pins, pinMask) => actions.correctBall(editingBowler.id, frameIdx, ballIdx, pins, pinMask)}
           onClose={() => setEditing(null)}
         />
       )}

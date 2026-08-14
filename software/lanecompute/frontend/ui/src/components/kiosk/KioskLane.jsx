@@ -389,8 +389,11 @@ function KioskLaneInner() {
         <PinPickerModal
           bowler={correctingBowler}
           frameIdx={correcting.frameIdx}
-          onCommit={(frameIdx, ballIdx, pins) =>
-            report(actions.correctBall(correctingBowler.id, frameIdx, ballIdx, pins), "Score updated")}
+          // pinMask must be forwarded, not dropped: it's what populates
+          // frames[].pinMasks, and without it a later ball in the same
+          // frame has no way to know which pins are already down.
+          onCommit={(frameIdx, ballIdx, pins, pinMask) =>
+            report(actions.correctBall(correctingBowler.id, frameIdx, ballIdx, pins, pinMask), "Score updated")}
           onClose={() => setCorrecting(null)}
         />
       )}
