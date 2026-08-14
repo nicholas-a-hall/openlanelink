@@ -24,7 +24,17 @@ export default function ActionButton({ glyph, label, sublabel, accent, disabled,
         borderRadius: 14,
         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7,
         ...(accented
-          ? { background: accent.fill, borderColor: accent.fill, color: accent.ink }
+          ? {
+              background: accent.fill,
+              borderColor: accent.fill,
+              color: accent.ink,
+              /* Faint emissive edge, in the FILL colour -- a console glows.
+                 currentColor would be wrong here: on a filled button that's
+                 the ink, so the halo would come out dark. The negative
+                 spread keeps it a hint rather than a bloom, which is also
+                 what stops it reading as a smudge in light mode. */
+              boxShadow: `0 0 18px -6px ${accent.fill}`,
+            }
           : { background: K.panel, color: K.text }),
       }}
     >

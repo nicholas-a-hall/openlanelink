@@ -363,6 +363,7 @@ function KioskLaneInner() {
                   style={{
                     padding: "16px 0", fontSize: 15, fontWeight: 800, letterSpacing: 0.5,
                     background: K.stop, borderColor: K.stop, color: K.stopInk,
+                    boxShadow: `0 0 18px -6px ${K.stop}`,
                   }}
                 >End session</button>
               </div>

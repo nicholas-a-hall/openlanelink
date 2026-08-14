@@ -52,13 +52,19 @@ const THEME_CSS = `
   --k-text-dim:    #b3bccc;  /* 8.2:1 -- still real body text, not decoration */
   --k-text-faint:  #8a94a6;  /* 5.1:1 -- smallest label size we allow */
 
-  --k-accent:      #e8503c;
-  --k-accent-ink:  #170906;
-  --k-green:       #35c07a;
-  --k-green-ink:   #04150c;
-  --k-yellow:      #e5b33a;
-  --k-yellow-ink:  #191203;
-  --k-blue:        #4b9ae0;
+  /* Console palette: cyan / amber / crimson, the triad nearly every
+     science-fiction interface uses, because each hue is unmistakable at a
+     glance in a dark room and none of them is a colour skin or daylight
+     produces. Chroma is high, but every fill still carries an ink colour
+     checked against it -- looking like a spaceship is not a reason to
+     stop being readable. */
+  --k-accent:      #f0486b;  /* alarms only */
+  --k-accent-ink:  #1a0308;
+  --k-green:       #2fd18a;
+  --k-green-ink:   #03170e;
+  --k-yellow:      #f0a92e;  /* amber: the machine, and the clock stopping */
+  --k-yellow-ink:  #1a1200;
+  --k-blue:        #3fc9e0;
 
   --k-hold-bg:     #2a2210;
   --k-danger:      #ff6b57;
@@ -70,23 +76,23 @@ const THEME_CSS = `
      doesn't concatenate, it produces an invalid colour and the whole
      box-shadow declaration is silently dropped -- which is exactly how the
      glow went missing the first time. */
-  --k-glow-good:   rgba(53, 192, 122, 0.5);
-  --k-glow-bad:    rgba(255, 107, 87, 0.5);
+  --k-glow-good:   rgba(47, 209, 138, 0.5);
+  --k-glow-bad:    rgba(240, 72, 107, 0.5);
 
   /* The committing action. A desaturated blue, not the accent: red is the
      loudest colour on the screen and it was carrying selection, confirmation
      AND danger at once, so nothing it marked meant anything in particular.
      Red is now reserved for destructive or alarming things; choosing and
      confirming are this. */
-  --k-primary:     #456f92;
-  --k-primary-ink: #eef4fa;
+  --k-primary:     #1f9fb5;  /* cyan: ask for something, open something */
+  --k-primary-ink: #02161a;
 
   /* Ending something. A desaturated red -- these are the deliberate,
      reversible-by-staff stops (end the game, hand the lane back), not the
      alarms --k-danger is for, so they read as "this finishes something"
      rather than "something is wrong". */
-  --k-stop:        #a9584c;
-  --k-stop-ink:    #fbf0ee;
+  --k-stop:        #c33a52;  /* crimson: end something */
+  --k-stop-ink:    #fff1f4;
 }
 
 [data-kiosk="light"] {
@@ -102,13 +108,17 @@ const THEME_CSS = `
   --k-text-dim:    #475263;  /* 7.9:1 */
   --k-text-faint:  #66717f;  /* 5.2:1 */
 
-  --k-accent:      #c33520;
+  /* Same hue families, taken down in lightness until they hold contrast
+     against a white panel. Science-fiction palettes assume a dark room;
+     transplanted literally they turn into pastel and stop meaning
+     anything, so light mode keeps the hues and loses the glow. */
+  --k-accent:      #b3204f;
   --k-accent-ink:  #ffffff;
-  --k-green:       #157a47;
+  --k-green:       #0f7a52;
   --k-green-ink:   #ffffff;
-  --k-yellow:      #855800;
+  --k-yellow:      #8a5300;
   --k-yellow-ink:  #ffffff;
-  --k-blue:        #1b5f9c;
+  --k-blue:        #0d6d7d;
 
   --k-hold-bg:     #fdf3d8;
   --k-danger:      #b3271a;
@@ -117,13 +127,13 @@ const THEME_CSS = `
 
   /* Stronger than the dark scheme's: a coloured halo has far less to work
      with against a near-white page than against a near-black one. */
-  --k-glow-good:   rgba(21, 122, 71, 0.42);
-  --k-glow-bad:    rgba(179, 39, 26, 0.42);
+  --k-glow-good:   rgba(15, 122, 82, 0.42);
+  --k-glow-bad:    rgba(179, 32, 79, 0.42);
 
-  --k-primary:     #3f6d92;
+  --k-primary:     #0d6d7d;
   --k-primary-ink: #ffffff;
 
-  --k-stop:        #9c4436;
+  --k-stop:        #a8283f;
   --k-stop-ink:    #ffffff;
 }
 `;
