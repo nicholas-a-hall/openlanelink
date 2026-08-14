@@ -10,7 +10,13 @@ import { K } from "./theme.jsx";
    caller had to remember to set a matching text colour, and in practice
    didn't. Everything else stays a plain surface, so the accent means
    something. */
-export default function ActionButton({ glyph, label, sublabel, accent, disabled, onClick }) {
+/* `outlined` draws the accent as a border and text instead of a fill.
+   Used for the endings: they should be unmistakable but not the loudest
+   thing on a screen full of ordinary actions, and an outline says
+   "deliberate" where a solid block says "press me". It also keeps the
+   console look — a bright rule on a dark panel is as much a HUD idiom as
+   a filled key. */
+export default function ActionButton({ glyph, label, sublabel, accent, outlined = false, disabled, onClick }) {
   const accented = accent && !disabled;
   return (
     <button
@@ -24,17 +30,27 @@ export default function ActionButton({ glyph, label, sublabel, accent, disabled,
         borderRadius: 14,
         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7,
         ...(accented
-          ? {
-              background: accent.fill,
-              borderColor: accent.fill,
-              color: accent.ink,
-              /* Faint emissive edge, in the FILL colour -- a console glows.
-                 currentColor would be wrong here: on a filled button that's
-                 the ink, so the halo would come out dark. The negative
-                 spread keeps it a hint rather than a bloom, which is also
-                 what stops it reading as a smudge in light mode. */
-              boxShadow: `0 0 18px -6px ${accent.fill}`,
-            }
+          ? outlined
+            ? {
+                background: K.panel,
+                borderColor: accent.fill,
+                borderWidth: 2,
+                // The accent becomes the text, so it has to clear contrast
+                // against the PANEL rather than against itself.
+                color: accent.fill,
+                boxShadow: `0 0 16px -8px ${accent.fill}`,
+              }
+            : {
+                background: accent.fill,
+                borderColor: accent.fill,
+                color: accent.ink,
+                /* Faint emissive edge, in the FILL colour -- a console glows.
+                   currentColor would be wrong here: on a filled button that's
+                   the ink, so the halo would come out dark. The negative
+                   spread keeps it a hint rather than a bloom, which is also
+                   what stops it reading as a smudge in light mode. */
+                boxShadow: `0 0 18px -6px ${accent.fill}`,
+              }
           : { background: K.panel, color: K.text }),
       }}
     >

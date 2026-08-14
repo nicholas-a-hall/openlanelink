@@ -340,7 +340,7 @@ function KioskLaneInner() {
                 {gameInProgress ? (
                   <ActionButton
                     glyph="⏹" label="End game" sublabel="Keeps your lane"
-                    accent={{ fill: K.stop, ink: K.stopInk }}
+                    accent={{ fill: K.stop, ink: K.stopInk }} outlined
                     onClick={() => setSheet({ kind: "endGame" })}
                   />
                 ) : (
@@ -364,8 +364,8 @@ function KioskLaneInner() {
                   onClick={() => setSheet({ kind: "endSession" })}
                   style={{
                     padding: "16px 0", fontSize: 15, fontWeight: 800, letterSpacing: 0.5,
-                    background: K.stop, borderColor: K.stop, color: K.stopInk,
-                    boxShadow: `0 0 18px -6px ${K.stop}`,
+                    background: K.panel, borderColor: K.stop, borderWidth: 2,
+                    color: K.stop, boxShadow: `0 0 16px -8px ${K.stop}`,
                   }}
                 >End session</button>
               </div>
