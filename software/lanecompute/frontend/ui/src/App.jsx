@@ -1,6 +1,7 @@
 import { Routes, Route, Link } from "react-router-dom";
 import DisplayLanePage from "./components/display/DisplayLanePage.jsx";
 import ControlLane from "./components/control/ControlLane.jsx";
+import KioskLane from "./components/kiosk/KioskLane.jsx";
 import { T } from "./lib/theme.js";
 
 const LANES = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -13,9 +14,13 @@ function DevIndex() {
     }}>
       <h1 style={{ marginBottom: 4 }}>OpenLane Scheduler — dev index</h1>
       <p style={{ color: T.muted, marginBottom: 24 }}>
-        Each lane's monitor and control tablet are separate URLs — this page is a dev-only
-        launcher, not part of the real deployment (each device will be pointed straight at
-        its own /display/:laneId or /control/:laneId).
+        Each lane's screens are separate URLs — this page is a dev-only launcher, not part
+        of the real deployment (each device is pointed straight at its own route).
+        <br />
+        <strong style={{ color: T.text }}>Display</strong> is the overhead monitor,{" "}
+        <strong style={{ color: T.text }}>Kiosk</strong> is the bowler terminal on the lane
+        console, and <strong style={{ color: T.text }}>Control</strong> is the scoresheet /
+        correction screen.
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 16 }}>
         {LANES.map((id) => (
@@ -23,6 +28,7 @@ function DevIndex() {
             <div style={{ fontWeight: 700, marginBottom: 10 }}>Lane {id}</div>
             <div style={{ display: "flex", gap: 8 }}>
               <Link to={`/display/${id}`} style={{ color: T.blue }}>Display</Link>
+              <Link to={`/kiosk/${id}`} style={{ color: T.green }}>Kiosk</Link>
               <Link to={`/control/${id}`} style={{ color: T.yellow }}>Control</Link>
             </div>
           </div>
@@ -37,6 +43,7 @@ export default function App() {
     <Routes>
       <Route path="/" element={<DevIndex />} />
       <Route path="/display/:laneId" element={<DisplayLanePage />} />
+      <Route path="/kiosk/:laneId" element={<KioskLane />} />
       <Route path="/control/:laneId" element={<ControlLane />} />
     </Routes>
   );

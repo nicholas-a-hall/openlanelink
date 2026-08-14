@@ -1,10 +1,19 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useLaneFeed } from "../../lib/useLaneFeed.js";
-import { ballGlyph, STRIKE } from "../../lib/scoring.js";
 import { T } from "../../lib/theme.js";
+import { ballGlyph } from "../../lib/scoring.js";
+import CorrectionModal from "../shared/scoresheet/CorrectionModal.jsx";
 
-/* Neumorphic raised/recessed helpers, tuned for the tablet control screen
+/* The tap-a-frame pin picker (CorrectionModal) moved to
+   components/shared/scoresheet/ when the bowler terminal gained score
+   correction — both screens post the same correction against the same
+   endpoint, so they open the same picker. The scoresheet layout itself
+   stayed here: this screen's dense 10-across strip and the terminal's
+   one-frame-per-row list are genuinely different presentations of the same
+   data, not one component with a flag.
+
+   Neumorphic raised/recessed helpers, tuned for the tablet control screen
    (shares the Midnight Arcade tokens with the overhead display). */
 const raised = (r = 14) => ({
   background: `linear-gradient(145deg, ${T.raised}, ${T.surface})`,
@@ -16,8 +25,6 @@ const recessed = (r = 14) => ({
   borderRadius: r,
   boxShadow: `inset 5px 5px 11px ${T.shadowD}, inset -4px -4px 10px ${T.shadowL}`,
 });
-
-const PIN_ROWS = [[7, 8, 9, 10], [4, 5, 6], [2, 3], [1]];
 
 function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isActive }) {
   const boxes = isTenth ? 3 : 2;
@@ -60,13 +67,20 @@ function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isA
   );
 }
 
-function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame, currentFrame, currentBall }) {
-  const total = bowler.totalScore;
-  // currentFrame/currentBall come straight from the state machine's own
-  // snapshot (lane.currentFrame/currentBall) -- only meaningful for
-  // whichever bowler is actually active, never re-derived from frames here.
-  const up = isActive && currentFrame != null ? { frame: currentFrame - 1, ball: currentBall - 1 } : null;
+function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame }) {
+  // Read off the bowler's OWN snapshot fields. These are well-defined for
+  // every bowler on the roster, not just whoever has the turn (API.md
+  // §3.1), and `isActive` is what decides whether to draw the highlight.
+  //
+  // These used to be passed in as `lane.currentFrame`/`lane.currentBall` —
+  // fields that have never existed on the lane snapshot, only per bowler —
+  // so `up` was always null and the "you're here" highlight silently never
+  // rendered at all.
+  const up = isActive && bowler.currentFrame != null
+    ? { frame: bowler.currentFrame - 1, ball: bowler.currentBall - 1 }
+    : null;
   const isUpTurn = !!up;
+  const handicap = bowler.handicap ?? 0;
 
   return (
     <div style={{
@@ -89,7 +103,16 @@ function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame, currentFrame
         <div style={{
           fontSize: 24, fontWeight: 800, color: isActive ? T.yellow : T.muted, marginTop: 2,
           fontFamily: "'JetBrains Mono',monospace", lineHeight: 1,
-        }}>{total}</div>
+        }}>{bowler.totalScore}</div>
+        {/* Scratch stays the big number; the handicapped total sits under
+            it rather than replacing it, so nobody has to guess which one
+            they're looking at. Hidden entirely at 0 — a scratch bowler
+            shouldn't see a redundant second copy of their own score. */}
+        {handicap > 0 && (
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.muted, fontFamily: "'JetBrains Mono',monospace", marginTop: 3 }}>
+            +{handicap} = <span style={{ color: T.green }}>{bowler.totalWithHandicap}</span>
+          </div>
+        )}
       </div>
 
       <div style={{
@@ -108,107 +131,12 @@ function ScoreRow({ bowler, isActive, isWinner = false, onTapFrame, currentFrame
   );
 }
 
-function PinPicker({ knockedDown, onChange }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "4px 0" }}>
-      {PIN_ROWS.map((row, ri) => (
-        <div key={ri} style={{ display: "flex", gap: 10 }}>
-          {row.map((pin) => {
-            const down = knockedDown.has(pin);
-            return (
-              <button key={pin} onClick={() => !down && onChange(pin)} disabled={down} style={{
-                width: 44, height: 44, borderRadius: "50%", border: "none",
-                cursor: down ? "default" : "pointer", fontSize: 14, fontWeight: 700,
-                color: down ? T.muted : T.text, fontFamily: "'JetBrains Mono',monospace",
-                ...(down ? recessed(22) : raised(22)), opacity: down ? 0.4 : 1,
-                transition: "transform 120ms ease, opacity 200ms ease",
-              }}>{pin}</button>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CorrectionModal({ bowler, frameIdx, onCommit, onClose }) {
-  const frame = bowler.frames[frameIdx]?.balls || [];
-  const isTenth = frameIdx === bowler.frames.length - 1;
-  const [ballIdx, setBallIdx] = useState(0);
-  const [knocked, setKnocked] = useState(new Set());
-  const ballsInFrame = isTenth ? 3 : 2;
-
-  // Cap how many pins can be selected for this ball — a non-strike first
-  // ball in frames 1-9 only leaves (10 - first) standing. The identity of
-  // *which* pins those are isn't reconstructible from the frame array (only
-  // the count is stored), so the picker doesn't pre-lock specific pins.
-  const maxSelectable = useMemo(() => {
-    if (ballIdx === 0) return 10;
-    if (!isTenth) {
-      const first = frame[0];
-      return first != null && first !== STRIKE ? 10 - first : 10;
-    }
-    return 10;
-  }, [ballIdx, frame, isTenth]);
-
-  const commitBall = (pins) => {
-    onCommit(frameIdx, ballIdx, pins);
-    setKnocked(new Set());
-    if (ballIdx + 1 < ballsInFrame) setBallIdx(ballIdx + 1);
-    else onClose();
-  };
-
-  return (
-    <div onClick={onClose} style={{
-      position: "fixed", inset: 0, background: "rgba(5,4,10,0.72)", backdropFilter: "blur(3px)",
-      display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50,
-    }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        ...raised(20), width: "100%", maxWidth: 480, padding: "20px 18px 26px",
-        borderTopLeftRadius: 20, borderTopRightRadius: 20,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>
-            {bowler.name} · Frame {frameIdx + 1} · Ball {ballIdx + 1}
-          </div>
-          <button onClick={onClose} style={{
-            width: 30, height: 30, borderRadius: "50%", border: "none", cursor: "pointer",
-            color: T.muted, background: "rgba(0,0,0,0.3)", fontSize: 15,
-          }}>✕</button>
-        </div>
-
-        <PinPicker knockedDown={knocked} onChange={(pin) => {
-          setKnocked((prev) => {
-            const next = new Set(prev);
-            if (next.has(pin)) next.delete(pin);
-            else if (next.size < maxSelectable) next.add(pin);
-            return next;
-          });
-        }} />
-
-        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-          <button onClick={() => commitBall(0)} style={{
-            flex: 1, padding: "12px 0", fontSize: 13, fontWeight: 700, color: T.muted,
-            border: "none", cursor: "pointer", ...raised(11),
-          }}>Gutter (0)</button>
-          <button
-            onClick={() => commitBall(Math.min(knocked.size, maxSelectable))}
-            style={{
-              flex: 2, padding: "12px 0", fontSize: 14, fontWeight: 800, color: T.bg,
-              border: "none", cursor: "pointer", borderRadius: 11,
-              background: `linear-gradient(145deg, ${T.red}, #b83020)`,
-              boxShadow: `4px 4px 10px ${T.shadowD}`,
-            }}
-          >Confirm {knocked.size} pin{knocked.size === 1 ? "" : "s"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RosterBar({ bowlers, activeId, onAdd, onRemove }) {
+function RosterBar({ bowlers, maxBowlers, activeId, onAdd, onRemove }) {
   const [name, setName] = useState("");
-  const full = bowlers.length >= 12;
+  // Backend-owned (game_state.MAX_BOWLERS_PER_LANE, in the lane snapshot) —
+  // was a hardcoded 12 here, which would have silently disagreed with the
+  // server the moment a house configured a different capacity.
+  const full = bowlers.length >= maxBowlers;
   const add = () => {
     const n = name.trim();
     if (!n || full) return;
@@ -236,7 +164,7 @@ function RosterBar({ bowlers, activeId, onAdd, onRemove }) {
       <div style={{ display: "flex", gap: 8 }}>
         <input
           value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()}
-          placeholder={full ? "Lane full (12 max)" : "Add bowler…"} disabled={full}
+          placeholder={full ? `Lane full (${maxBowlers} max)` : "Add bowler…"} disabled={full}
           style={{ flex: 1, padding: "12px 14px", fontSize: 14, color: T.text, border: "none", outline: "none", ...recessed(11), fontFamily: "inherit" }}
         />
         <button onClick={add} disabled={full || !name.trim()} style={{
@@ -299,7 +227,7 @@ export default function ControlLane() {
         </div>
       </div>
 
-      <RosterBar bowlers={lane.bowlers} activeId={activeBowler?.id} onAdd={actions.addBowler} onRemove={actions.removeBowler} />
+      <RosterBar bowlers={lane.bowlers} maxBowlers={lane.maxBowlers} activeId={activeBowler?.id} onAdd={actions.addBowler} onRemove={actions.removeBowler} />
 
       {lane.bowlers.length === 0 ? (
         <div style={{ ...recessed(18), padding: "48px 20px", textAlign: "center", color: T.muted }}>
@@ -312,7 +240,6 @@ export default function ControlLane() {
             isActive={allComplete || activeBowler?.id === b.id}
             isWinner={allComplete && b.totalScore === topScore}
             onTapFrame={(frameIdx) => setEditing({ bowlerId: b.id, frameIdx })}
-            currentFrame={lane.currentFrame} currentBall={lane.currentBall}
           />
         ))
       )}

@@ -27,6 +27,26 @@
    ═══════════════════════════════════ */
 export const STRIKE = 10;
 
+/* The total a screen should show as "the score": handicapped where a
+   handicap exists, scratch otherwise.
+
+   Both numbers arrive precomputed (`totalScore`, `handicap`,
+   `totalWithHandicap` -- see API.md §3.1); this only picks between them, so
+   it stays inside this file's rule about deriving rather than computing.
+   It exists so every screen picks the SAME one. Handicap never enters
+   frame arithmetic -- a frame's `runningTotal` is always scratch, which is
+   what makes the pins-per-frame column add up -- so the handicapped figure
+   can only ever appear as a bowler's total, and a screen that showed
+   `totalScore` there while another showed `totalWithHandicap` would have
+   two different answers to who's winning.
+
+   Anywhere this is used, show the handicap alongside it (a "+N"): two
+   bowlers on the same displayed number are not tied if one of them is
+   carrying 40 pins. */
+export function displayTotal(bowler) {
+  return bowler.handicap > 0 ? bowler.totalWithHandicap : bowler.totalScore;
+}
+
 /* How a single ball should be displayed in its box. Takes the raw
    per-frame `balls` array (frame.balls), not the frame object itself. */
 export function ballGlyph(balls, idx, isTenth) {

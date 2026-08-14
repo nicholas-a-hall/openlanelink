@@ -2,8 +2,35 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>OpenLane Scheduler</title>
+    <style>
+      /*
+        There was no reset here at all, which is where the white frame around
+        every screen came from: the UA's default 8px margin on <body>. These
+        screens are all full-bleed by design (an overhead monitor, a lane
+        console, a control tablet) -- none of them should ever be inset from
+        the glass.
+
+        The height chain matters as much as the margin: a child using
+        height:100% needs every ancestor to have a height, or it collapses
+        and the page ends up shorter than the viewport with the body colour
+        showing beneath it.
+
+        --app-bg is what paints the overscroll/rubber-band area outside the
+        app's own painted region. It defaults to the dark base every screen
+        already uses, and the kiosk's theme provider overrides it when
+        someone switches that screen to light mode.
+      */
+      :root { --app-bg: #0e1016; }
+      html, body, #root { height: 100%; margin: 0; padding: 0; }
+      body {
+        background: var(--app-bg);
+        overscroll-behavior: none;
+        -webkit-font-smoothing: antialiased;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

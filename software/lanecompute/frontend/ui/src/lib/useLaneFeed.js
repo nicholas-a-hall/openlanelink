@@ -11,17 +11,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
    { lane, running, actions } so consuming components don't need to
    change -- see API.md for the exact wire shapes this now produces/sends.
 
-   Auto-restarts a new game a few seconds after the lane reaches
-   GAME_COMPLETE (product decision -- see PR discussion). `running` no
-   longer means anything server-side (there's no "pause accepting
-   pinsetter events" endpoint) and setPinsetterRunning is gone; the old
-   toggle was a pure simulator artifact.
+   Games are no longer started from here. This hook used to auto-POST
+   /games whenever an IDLE lane had bowlers on it, and again a few seconds
+   after GAME_COMPLETE. That was the right call when nothing else could
+   start one -- but a lane is now activated explicitly (by the bowler
+   terminal, or eventually the siteserver bus; see the backend's
+   session.py), and every game after the first is the party tapping "play
+   another game". An auto-restart would fight both of those: ending a game
+   would immediately un-end itself. Starting a game is now an action a
+   caller takes, never something this hook does behind their back.
+
+   `running` no longer means anything server-side (there's no "pause
+   accepting pinsetter events" endpoint) and setPinsetterRunning is gone;
+   the old toggle was a pure simulator artifact.
    ═══════════════════════════════════════════════════════════════════ */
 
 const DEFAULT_API_PORT = 8000;
 const RECONNECT_DELAY_MS = 3000;
-const NEW_GAME_DELAY_MS = 4000; // matches the old simulator's pacing
-const ROSTER_SETTLE_MS = 800; // debounce so back-to-back bowler adds don't double-start a game
 const MAX_EVENTS = 6;
 
 function apiBase() {
@@ -55,9 +61,32 @@ function emptyLane(laneId) {
     laneId,
     bowlers: [],
     gameType: null,
+    gameEnded: false,
+    // Backend-owned lane capacity (game_state.MAX_BOWLERS_PER_LANE). Never
+    // hardcode a copy of this in a component -- a house that seats more per
+    // lane changes one env var, not the UI.
+    maxBowlers: 12,
     machineState: "IDLE",
     currentBowlerId: null,
     ballSpeed: null,
+    // Lane activation / session (backend session.py). `active` false means
+    // an idle lane -- nobody has it. `session` survives being ended so a
+    // terminal can still show what just finished; `active` is the flag to
+    // branch on, never `session != null`.
+    active: false,
+    session: null,
+    // Open staff summons only (backend assistance.py). awaitingStaff is
+    // specifically "a problem is open", which is what holds the clock -- a
+    // pending server call leaves it false.
+    assistance: [],
+    awaitingStaff: false,
+    // Bumped every time somebody explicitly SETS the turn (the backend's
+    // "turn_set" event), as opposed to it advancing because a ball was
+    // thrown. The overhead display holds back a natural turn change for a
+    // few seconds so the finished score stays readable; a deliberate one
+    // has to land immediately. A counter rather than a boolean so a repeat
+    // set to the same bowler is still a distinguishable event.
+    turnSetSeq: 0,
     connected: false,
     events: [{ ts: fmtTime(), type: "sys", msg: "connecting…" }],
   };
@@ -73,9 +102,7 @@ export function useLaneFeed(laneId) {
   const [lane, setLane] = useState(() => emptyLane(laneId));
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
-  const newGameTimerRef = useRef(null);
   const stopRef = useRef(false);
-  const startingGameRef = useRef(false); // guards against a duplicate POST /games race
   const prevBallsRef = useRef(new Map()); // bowlerId -> flat balls, for delivery-diff events
 
   const addEvent = useCallback((type, msg) => {
@@ -112,8 +139,14 @@ export function useLaneFeed(laneId) {
       ...prev,
       bowlers: data.bowlers,
       gameType: data.game?.gameType ?? null,
+      gameEnded: data.game?.ended ?? false,
+      maxBowlers: data.maxBowlers ?? prev.maxBowlers,
       machineState: data.machineState,
       currentBowlerId: data.currentBowlerId,
+      active: data.laneActive,
+      session: data.session,
+      assistance: data.assistance ?? [],
+      awaitingStaff: data.awaitingStaff ?? false,
       connected: true,
     }));
   }, [addEvent]);
@@ -135,7 +168,15 @@ export function useLaneFeed(laneId) {
       } else if (msg.type === "event" && msg.event === "ball_speed") {
         setLane((prev) => ({ ...prev, ballSpeed: msg.data.mph }));
       } else if (msg.type === "event" && msg.event === "assistance_requested") {
-        addEvent("alert", "assistance requested");
+        addEvent("alert", msg.data?.kind === "service" ? "server requested" : "help requested");
+      } else if (msg.type === "event" && msg.event === "assistance_resolved") {
+        addEvent("sys", msg.data?.kind === "service" ? "server call cleared" : "problem resolved");
+      } else if (msg.type === "event" && msg.event === "turn_set") {
+        setLane((prev) => ({ ...prev, turnSetSeq: prev.turnSetSeq + 1 }));
+      } else if (msg.type === "event" && msg.event === "lane_activated") {
+        addEvent("sys", `lane activated (${msg.data?.source ?? "api"})`);
+      } else if (msg.type === "event" && msg.event === "lane_deactivated") {
+        addEvent("sys", "lane closed");
       }
     };
 
@@ -158,70 +199,123 @@ export function useLaneFeed(laneId) {
     return () => {
       stopRef.current = true;
       clearTimeout(reconnectTimerRef.current);
-      clearTimeout(newGameTimerRef.current);
       wsRef.current?.close();
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [laneId]);
 
-  // ── start a game automatically: a short debounce after bowlers first
-  // exist on an otherwise-idle lane, or a few seconds after GAME_COMPLETE
-  // so the final score has a moment to be visible first. A fresh lane sits
-  // in IDLE until POST /games is called -- nothing else starts one.
-  //
-  // The IDLE case MUST be debounced, not fired immediately: adding two
-  // bowlers back-to-back broadcasts two separate state updates (bowlers
-  // still empty->1, then 1->2), each re-running this effect. The first
-  // POST /games often resolves (clearing startingGameRef's concurrency
-  // guard) before the second bowler's broadcast even arrives, so a naive
-  // immediate call fires twice -- the second add_game() snapshots
-  // game.bowler_ids from whoever's in the roster *at that instant*, which
-  // can be just the first bowler, permanently excluding the second from
-  // that game's turn rotation (game_state.py's add_bowler/remove_bowler
-  // now also keep an already-started game's bowler_ids in sync for the
-  // same reason, but there's still no reason to double-call this). ──
-  useEffect(() => {
-    clearTimeout(newGameTimerRef.current);
-    const startGame = () => {
-      if (startingGameRef.current) return;
-      startingGameRef.current = true;
-      apiCall(laneId, "/games", { method: "POST", body: JSON.stringify({}) })
-        .catch((e) => addEvent("sys", `couldn't start game: ${e.message}`))
-        .finally(() => { startingGameRef.current = false; });
-    };
-
-    if (lane.machineState === "GAME_COMPLETE") {
-      newGameTimerRef.current = setTimeout(startGame, NEW_GAME_DELAY_MS);
-    } else if (lane.machineState === "IDLE" && lane.bowlers.length > 0) {
-      newGameTimerRef.current = setTimeout(startGame, ROSTER_SETTLE_MS);
-    }
-    return () => clearTimeout(newGameTimerRef.current);
-  }, [lane.machineState, lane.bowlers.length, laneId, addEvent]);
-
   // ── actions: REST calls to the compute node ──
-  const addBowler = useCallback((name) => {
-    apiCall(laneId, "/bowlers", { method: "POST", body: JSON.stringify({ name }) })
-      .catch((e) => addEvent("sys", `couldn't add bowler: ${e.message}`));
+  // Every action resolves to { ok, data } or { ok: false, error } instead
+  // of rejecting. The event log gets the failure either way, but the
+  // bowler terminal needs to show a real "that didn't work" toast at the
+  // point of the tap, and an action that rejects would either need a
+  // .catch() at all ~12 call sites or produce unhandled rejections at the
+  // ones that forgot.
+  const run = useCallback((what, path, options) => {
+    return apiCall(laneId, path, options).then(
+      (data) => ({ ok: true, data }),
+      (e) => {
+        addEvent("sys", `couldn't ${what}: ${e.message}`);
+        return { ok: false, error: e.message };
+      }
+    );
   }, [laneId, addEvent]);
 
-  const removeBowler = useCallback((id) => {
-    apiCall(laneId, `/bowlers/${id}`, { method: "DELETE" })
-      .catch((e) => addEvent("sys", `couldn't remove bowler: ${e.message}`));
-  }, [laneId, addEvent]);
+  const post = useCallback((what, path, body) => run(what, path, {
+    method: "POST",
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }), [run]);
+
+  // Handicap travels with the name -- see api.py's BowlerCreate for why
+  // it's part of creation rather than a follow-up call.
+  const addBowler = useCallback((name, handicap = 0) =>
+    post("add bowler", "/bowlers", { name, handicap }), [post]);
+
+  const renameBowler = useCallback((id, name) => run("rename bowler", `/bowlers/${id}`, {
+    method: "PUT", body: JSON.stringify({ name }),
+  }), [run]);
+
+  const setHandicap = useCallback((id, handicap) => run("set handicap", `/bowlers/${id}/handicap`, {
+    method: "PUT", body: JSON.stringify({ handicap }),
+  }), [run]);
+
+  const removeBowler = useCallback((id) => run("remove bowler", `/bowlers/${id}`, { method: "DELETE" }), [run]);
+
+  // Hand the turn to someone else -- for when the lane's rotation and the
+  // people actually standing on it have drifted apart. Doesn't record or
+  // remove a ball; fixing the frames themselves is correctBall.
+  const setCurrentBowler = useCallback((id) => run("change whose turn it is", "/turn", {
+    method: "PUT", body: JSON.stringify({ bowler_id: id }),
+  }), [run]);
+
+  // ── lane activation / session ──
+  // activateLane starts the session AND the first game server-side (see
+  // api.py's activate_lane); startGame is only ever the *next* scoresheet
+  // for a lane that's already active.
+  // `bowlers` is the point of this payload, not a convenience: the roster
+  // travels WITH the activation so the scoresheet is instantiated around a
+  // known set of players. The terminal collects names first and only then
+  // confirms, so this list is complete when it's sent.
+  const activateLane = useCallback((opts = {}) => post("start", "/activate", {
+    mode: opts.mode ?? "timed",
+    minutes: opts.minutes ?? null,
+    games: opts.games ?? null,
+    bowlers: (opts.bowlers ?? []).map((b) => ({ name: b.name, handicap: b.handicap ?? 0 })),
+    source: "kiosk",
+  }), [post]);
+
+  const deactivateLane = useCallback(() => post("end session", "/deactivate"), [post]);
+
+  const extendSession = useCallback((opts = {}) => post("extend", "/session/extend", {
+    minutes: opts.minutes ?? null,
+    games: opts.games ?? 1,
+  }), [post]);
+
+  const startGame = useCallback(() => post("start game", "/games", {}), [post]);
+
+  const endGame = useCallback(() => post("end game", "/games/end"), [post]);
+
+  // ── staff summons ──
+  const requestAssistance = useCallback((kind, reason = null) =>
+    post(kind === "service" ? "call a server" : "call for help", "/assistance", { kind, reason }), [post]);
+
+  const resolveAssistance = useCallback((id) =>
+    post("clear the call", `/assistance/${id}/resolve`), [post]);
+
+  // ── pinsetter (mesh; 503s when the gateway link is down) ──
+  const cyclePinsetter = useCallback(() => post("cycle the pinsetter", "/pinsetter/cycle"), [post]);
+
+  const rerackPinsetter = useCallback(() => post("re-rack the pinsetter", "/pinsetter/rerack"), [post]);
 
   // Kept 0-indexed (frameIdx, ballIdx) at the call site -- matches how
   // CorrectionModal already addresses frames/balls -- and translated to
   // the backend's 1-indexed (frame_number, ball_in_frame) here, the one
   // place that needs to know about that difference.
-  const correctBall = useCallback((bowlerId, frameIdx, ballIdx, pins) => {
-    apiCall(laneId, `/bowlers/${bowlerId}/score`, {
-      method: "PUT",
-      body: JSON.stringify({ frame_number: frameIdx + 1, ball_in_frame: ballIdx + 1, pinfall: pins }),
-    }).catch((e) => addEvent("sys", `couldn't correct score: ${e.message}`));
-  }, [laneId, addEvent]);
+  // pinMask is which pins fell (bit N-1 = pin N), or null when the caller
+  // genuinely doesn't know. The pin pickers always know, and sending it is
+  // what lets a later ball in the same frame grey out pins already down.
+  const correctBall = useCallback((bowlerId, frameIdx, ballIdx, pins, pinMask = null) => run("correct score", `/bowlers/${bowlerId}/score`, {
+    method: "PUT",
+    body: JSON.stringify({
+      frame_number: frameIdx + 1,
+      ball_in_frame: ballIdx + 1,
+      pinfall: pins,
+      pin_mask: pinMask,
+    }),
+  }), [run]);
 
-  const actions = useMemo(() => ({ addBowler, removeBowler, correctBall }), [addBowler, removeBowler, correctBall]);
+  const actions = useMemo(() => ({
+    addBowler, renameBowler, setHandicap, removeBowler, correctBall, setCurrentBowler,
+    activateLane, deactivateLane, extendSession, startGame, endGame,
+    requestAssistance, resolveAssistance,
+    cyclePinsetter, rerackPinsetter,
+  }), [
+    addBowler, renameBowler, setHandicap, removeBowler, correctBall, setCurrentBowler,
+    activateLane, deactivateLane, extendSession, startGame, endGame,
+    requestAssistance, resolveAssistance,
+    cyclePinsetter, rerackPinsetter,
+  ]);
 
   return { lane, actions };
 }
