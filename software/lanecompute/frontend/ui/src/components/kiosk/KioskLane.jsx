@@ -337,13 +337,6 @@ function KioskLaneInner() {
                   onClick={() => report(actions.requestAssistance("service"), "A server is on the way")}
                 />
 
-                <ActionButton
-                  glyph="⚠" label="Call for help" sublabel="Stops your clock"
-                  accent={{ fill: K.yellow, ink: K.yellowInk }}
-                  disabled={lane.awaitingStaff}
-                  onClick={() => report(actions.requestAssistance("problem"), "Help is on the way")}
-                />
-
                 {gameInProgress ? (
                   <ActionButton
                     glyph="⏹" label="End game" sublabel="Keeps your lane"
@@ -358,6 +351,13 @@ function KioskLaneInner() {
                     onClick={() => report(actions.startGame(), "New game started")}
                   />
                 )}
+
+                <ActionButton
+                  glyph="⚠" label="Call for help" sublabel="Stops your clock"
+                  accent={{ fill: K.yellow, ink: K.yellowInk }}
+                  disabled={lane.awaitingStaff}
+                  onClick={() => report(actions.requestAssistance("problem"), "Help is on the way")}
+                />
 
                 <button
                   className="k-btn k-actions-wide"
