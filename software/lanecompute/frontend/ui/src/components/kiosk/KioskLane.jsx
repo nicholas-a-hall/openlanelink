@@ -203,7 +203,7 @@ function KioskLaneInner() {
      `correcting` layers the pin picker on top and, when closed, drops back
      to the frame list rather than out of the flow entirely. */
   const [editing, setEditing] = useState(null);
-  const [correcting, setCorrecting] = useState(null); // { bowlerId, frameIdx }
+  const [correcting, setCorrecting] = useState(null); // { bowlerId, frameIdx, ballIdx }
 
   const active = lane.active;
   /* Session open, but no scoresheet has ever been started on it -- the
@@ -379,7 +379,7 @@ function KioskLaneInner() {
           currentBowlerId={lane.currentBowlerId}
           selectedBowler={editingBowler}
           onPickBowler={(bowler) => setEditing({ bowlerId: bowler.id })}
-          onPickFrame={(frameIdx) => setCorrecting({ bowlerId: editing.bowlerId, frameIdx })}
+          onPickFrame={(frameIdx, ballIdx) => setCorrecting({ bowlerId: editing.bowlerId, frameIdx, ballIdx })}
           onBack={() => setEditing({ bowlerId: null })}
           onClose={() => { setEditing(null); setCorrecting(null); }}
         />
@@ -389,6 +389,7 @@ function KioskLaneInner() {
         <PinPickerModal
           bowler={correctingBowler}
           frameIdx={correcting.frameIdx}
+          ballIdx={correcting.ballIdx}
           // pinMask must be forwarded, not dropped: it's what populates
           // frames[].pinMasks, and without it a later ball in the same
           // frame has no way to know which pins are already down.

@@ -22,36 +22,62 @@ import Modal from "./Modal.jsx";
    picker opens on top of this list, and closing it returns here rather
    than dumping the bowler back to the lane screen mid-correction. */
 
-function BallBoxes({ frame, isTenth }) {
+/* Each ball is its own target: you correct the ball you tap, and only that
+   ball. A box is tappable when it already holds a ball or is the next one
+   in that frame — anything beyond is a gap the backend can't record into
+   (see game_state.edit_score), so it stays inert rather than offering an
+   edit that would only 400. */
+function BallBoxes({ frame, isTenth, enabled, onPick }) {
   const boxes = isTenth ? 3 : 2;
   return (
     <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
       {Array.from({ length: boxes }).map((_, i) => {
         const glyph = ballGlyph(frame.balls, i, isTenth);
         const isMark = glyph === "X" || glyph === "/";
+        const canEdit = enabled && i <= frame.balls.length;
         return (
-          <div key={i} style={{
-            ...sunken(8),
-            width: 40, height: 40,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: MONO, fontSize: 17, fontWeight: 800,
-            color: isMark ? K.accent : glyph ? K.text : K.textFaint,
-          }}>{glyph || "·"}</div>
+          <button
+            key={i}
+            className="k-btn"
+            onClick={canEdit ? () => onPick(i) : undefined}
+            disabled={!canEdit}
+            aria-label={`Ball ${i + 1}${glyph ? `, ${glyph}` : ", not bowled"}`}
+            style={{
+              ...sunken(8),
+              width: 40, height: 40, padding: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: MONO, fontSize: 17, fontWeight: 800,
+              color: isMark ? K.accent : glyph ? K.text : K.textFaint,
+              opacity: canEdit ? 1 : 0.45,
+              ...(canEdit ? { borderColor: K.lineStrong } : null),
+            }}
+          >{glyph || "·"}</button>
         );
       })}
     </div>
   );
 }
 
-function Row({ onClick, children, style, disabled = false }) {
+/* A plain container, not a button: the ball boxes inside it are the
+   targets now, and nesting buttons isn't valid markup. */
+function Row({ children, style }) {
+  return (
+    <div style={{
+      ...card(12), width: "100%", padding: "11px 13px",
+      display: "flex", alignItems: "center", gap: 13, ...style,
+    }}>{children}</div>
+  );
+}
+
+/* Used by the bowler step, which is still a whole-row target. */
+function PickRow({ onClick, children }) {
   return (
     <button
       className="k-btn"
       onClick={onClick}
-      disabled={disabled}
       style={{
         ...card(12), width: "100%", padding: "11px 13px", textAlign: "left",
-        display: "flex", alignItems: "center", gap: 13, ...style,
+        display: "flex", alignItems: "center", gap: 13,
       }}
     >{children}</button>
   );
@@ -62,7 +88,7 @@ function BowlerStep({ bowlers, currentBowlerId, onPick }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ ...LABEL, marginBottom: 2 }}>Whose score?</div>
       {bowlers.map((b) => (
-        <Row key={b.id} onClick={() => onPick(b)}>
+        <PickRow key={b.id} onClick={() => onPick(b)}>
           {b.id === currentBowlerId && (
             <span aria-hidden="true" style={{
               width: 9, height: 9, borderRadius: 5, background: K.accent, flexShrink: 0,
@@ -81,7 +107,7 @@ function BowlerStep({ bowlers, currentBowlerId, onPick }) {
             </span>
           )}
           <span aria-hidden="true" style={{ fontSize: 18, color: K.textFaint }}>›</span>
-        </Row>
+        </PickRow>
       ))}
     </div>
   );
@@ -100,7 +126,7 @@ function FrameStep({ bowler, onPick, onBack }) {
         }}
       >‹ All bowlers</button>
 
-      <div style={{ ...LABEL, marginBottom: 2 }}>{bowler.name} — which frame?</div>
+      <div style={{ ...LABEL, marginBottom: 2 }}>{bowler.name} — tap a ball to fix it</div>
 
       {bowler.frames.map((frame, i) => {
         const isTenth = i === lastIdx;
@@ -109,21 +135,20 @@ function FrameStep({ bowler, onPick, onBack }) {
            this bowler is on -- the backend can overwrite a recorded ball or
            add the next one, but it can't write into a frame that hasn't
            been reached (there's nowhere to put the gap; see
-           game_state.edit_score). Offering those rows anyway just produced
-           a rejection toast, so they're inert. */
+           game_state.edit_score). */
         const editable = thrown || bowler.currentFrame === i + 1;
         return (
-          <Row
-            key={i}
-            onClick={editable ? () => onPick(i) : undefined}
-            disabled={!editable}
-            style={editable ? null : { opacity: 0.45 }}
-          >
+          <Row key={i} style={editable ? null : { opacity: 0.45 }}>
             <span style={{
               width: 26, flexShrink: 0, fontFamily: MONO, fontSize: 15, fontWeight: 800,
               color: K.textDim, textAlign: "center",
             }}>{i + 1}</span>
-            <BallBoxes frame={frame} isTenth={isTenth} />
+            <BallBoxes
+              frame={frame}
+              isTenth={isTenth}
+              enabled={editable}
+              onPick={(ballIdx) => onPick(i, ballIdx)}
+            />
             <span style={{
               flex: 1, textAlign: "right", fontFamily: MONO, fontSize: 20, fontWeight: 800,
               color: frame.runningTotal == null ? K.textFaint : K.text,

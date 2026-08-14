@@ -55,9 +55,9 @@ function PinPicker({ knockedDown, alreadyDown, onChange }) {
   );
 }
 
-export default function CorrectionModal({ bowler, frameIdx, onCommit, onClose }) {
-  const { ballIdx, knocked, alreadyDown, togglePin, commitSelected, commitGutter } =
-    useBallCorrection({ bowler, frameIdx, onCommit, onClose });
+export default function CorrectionModal({ bowler, frameIdx, ballIdx = 0, onCommit, onClose }) {
+  const { knocked, alreadyDown, togglePin, commitSelected, commitGutter } =
+    useBallCorrection({ bowler, frameIdx, ballIdx, onCommit, onClose });
 
   return (
     <div onClick={onClose} style={{

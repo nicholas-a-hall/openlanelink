@@ -62,12 +62,18 @@ export function pinsToMask(pins) {
   return mask;
 }
 
-export function useBallCorrection({ bowler, frameIdx, onCommit, onClose }) {
+/* `ballIdx` is chosen by the caller, not walked internally.
+
+   This used to open at ball 1 and step forward through the frame,
+   committing each one, and it only closed after the last. That made
+   correcting a single ball a multi-step chore: fixing ball 1 meant sitting
+   through ball 2 as well, and it stole the ball-2 slot to do it. The
+   caller now says which ball is being corrected and gets one edit, then
+   the picker closes. Reaching ball 2 is picking ball 2. */
+export function useBallCorrection({ bowler, frameIdx, ballIdx = 0, onCommit, onClose }) {
   const frame = bowler.frames[frameIdx]?.balls || [];
   const isTenth = frameIdx === bowler.frames.length - 1;
-  const ballsInFrame = isTenth ? 3 : 2;
 
-  const [ballIdx, setBallIdx] = useState(0);
   const [knocked, setKnocked] = useState(() => new Set());
 
   /* Pins an earlier ball in this frame already took down. The picker greys
@@ -115,11 +121,10 @@ export function useBallCorrection({ bowler, frameIdx, onCommit, onClose }) {
      kiosk-entered ball with no per-pin detail at all -- which in turn is
      why a later ball in the same frame had nothing to grey out. A gutter
      ball sends mask 0: "nothing fell" is known, not unknown. */
+  // One edit, then done — no stepping on to the next ball.
   const commit = (pins, pinMask) => {
     onCommit(frameIdx, ballIdx, pins, pinMask);
-    setKnocked(new Set());
-    if (ballIdx + 1 < ballsInFrame) setBallIdx(ballIdx + 1);
-    else onClose();
+    onClose();
   };
 
   return {

@@ -31,7 +31,7 @@ function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isA
   const cellBorder = "1px solid rgba(255,255,255,0.04)";
   return (
     <div
-      onClick={() => onTap(frameIdx)}
+      onClick={() => onTap(frameIdx, Math.min(frame.balls.length, (isTenth ? 3 : 2) - 1))}
       style={{
         flex: isTenth ? "1.5 1 0" : "1 1 0", minWidth: 0, display: "flex", flexDirection: "column",
         cursor: "pointer", borderRight: cellBorder, position: "relative",
@@ -44,8 +44,10 @@ function FrameCell({ frame, frameIdx, running, isTenth, isUp, upBall, onTap, isA
           const glyph = ballGlyph(frame.balls, i, isTenth);
           const isMark = glyph === "X" || glyph === "/";
           return (
-            <div key={i} style={{
-              flex: 1, borderLeft: i === 0 ? "none" : cellBorder,
+            <div key={i}
+              onClick={(e) => { e.stopPropagation(); onTap(frameIdx, i); }}
+              style={{
+              flex: 1, borderLeft: i === 0 ? "none" : cellBorder, cursor: "pointer",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 14, fontWeight: 700, lineHeight: 1, fontFamily: "'JetBrains Mono','SF Mono',monospace",
               color: isMark
@@ -239,7 +241,7 @@ export default function ControlLane() {
             key={b.id} bowler={b}
             isActive={allComplete || activeBowler?.id === b.id}
             isWinner={allComplete && b.totalScore === topScore}
-            onTapFrame={(frameIdx) => setEditing({ bowlerId: b.id, frameIdx })}
+            onTapFrame={(frameIdx, ballIdx) => setEditing({ bowlerId: b.id, frameIdx, ballIdx })}
           />
         ))
       )}
@@ -262,7 +264,7 @@ export default function ControlLane() {
 
       {editing && editingBowler && (
         <CorrectionModal
-          bowler={editingBowler} frameIdx={editing.frameIdx}
+          bowler={editingBowler} frameIdx={editing.frameIdx} ballIdx={editing.ballIdx}
           onCommit={(frameIdx, ballIdx, pins, pinMask) => actions.correctBall(editingBowler.id, frameIdx, ballIdx, pins, pinMask)}
           onClose={() => setEditing(null)}
         />

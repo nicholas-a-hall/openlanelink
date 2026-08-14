@@ -42,9 +42,9 @@ function Pin({ pin, down, already, onToggle }) {
   );
 }
 
-export default function PinPickerModal({ bowler, frameIdx, onCommit, onClose }) {
-  const { ballIdx, knocked, alreadyDown, togglePin, commitSelected, commitGutter } =
-    useBallCorrection({ bowler, frameIdx, onCommit, onClose });
+export default function PinPickerModal({ bowler, frameIdx, ballIdx = 0, onCommit, onClose }) {
+  const { knocked, alreadyDown, togglePin, commitSelected, commitGutter } =
+    useBallCorrection({ bowler, frameIdx, ballIdx, onCommit, onClose });
 
   return (
     <Modal
