@@ -55,14 +55,19 @@ const THEME_CSS = `
   /* Console palette: cyan / amber / crimson, the triad nearly every
      science-fiction interface uses, because each hue is unmistakable at a
      glance in a dark room and none of them is a colour skin or daylight
-     produces. Chroma is high, but every fill still carries an ink colour
-     checked against it -- looking like a spaceship is not a reason to
-     stop being readable. */
-  --k-accent:      #f0486b;  /* alarms only */
+     produces.
+
+     Every fill/ink pair is measured at roughly 7:1 or better -- above the
+     4.5:1 minimum, because this is read at arm's length by people of every
+     age, some of them wearing whatever glasses they came in with. The
+     fills are bright and the ink near-black rather than the reverse: a
+     dark fill with white text hits the same ratio but loses the emissive
+     quality the whole palette is for. */
+  --k-accent:      #ff5c7f;  /* alarms only */
   --k-accent-ink:  #1a0308;
-  --k-green:       #2fd18a;
-  --k-green-ink:   #03170e;
-  --k-yellow:      #f0a92e;  /* amber: the machine, and the clock stopping */
+  --k-green:       #3ad892;
+  --k-green-ink:   #02150c;
+  --k-yellow:      #f5b53f;  /* amber: the one call that stops the clock */
   --k-yellow-ink:  #1a1200;
   --k-blue:        #3fc9e0;
 
@@ -84,15 +89,15 @@ const THEME_CSS = `
      AND danger at once, so nothing it marked meant anything in particular.
      Red is now reserved for destructive or alarming things; choosing and
      confirming are this. */
-  --k-primary:     #1f9fb5;  /* cyan: ask for something, open something */
-  --k-primary-ink: #02161a;
+  --k-primary:     #35c6de;  /* cyan: the ordinary action */
+  --k-primary-ink: #01161b;
 
   /* Ending something. A desaturated red -- these are the deliberate,
      reversible-by-staff stops (end the game, hand the lane back), not the
      alarms --k-danger is for, so they read as "this finishes something"
      rather than "something is wrong". */
-  --k-stop:        #c33a52;  /* crimson: end something */
-  --k-stop-ink:    #fff1f4;
+  --k-stop:        #ff6b85;  /* crimson: end something */
+  --k-stop-ink:    #1c0409;
 }
 
 [data-kiosk="light"] {
@@ -112,11 +117,11 @@ const THEME_CSS = `
      against a white panel. Science-fiction palettes assume a dark room;
      transplanted literally they turn into pastel and stop meaning
      anything, so light mode keeps the hues and loses the glow. */
-  --k-accent:      #b3204f;
+  --k-accent:      #9c1a45;
   --k-accent-ink:  #ffffff;
-  --k-green:       #0f7a52;
+  --k-green:       #0b6042;
   --k-green-ink:   #ffffff;
-  --k-yellow:      #8a5300;
+  --k-yellow:      #7a4900;
   --k-yellow-ink:  #ffffff;
   --k-blue:        #0d6d7d;
 
@@ -130,10 +135,10 @@ const THEME_CSS = `
   --k-glow-good:   rgba(15, 122, 82, 0.42);
   --k-glow-bad:    rgba(179, 32, 79, 0.42);
 
-  --k-primary:     #0d6d7d;
+  --k-primary:     #0a5a68;
   --k-primary-ink: #ffffff;
 
-  --k-stop:        #a8283f;
+  --k-stop:        #96233a;
   --k-stop-ink:    #ffffff;
 }
 `;

@@ -44,10 +44,15 @@ export default function ActionButton({ glyph, label, sublabel, accent, disabled,
         textAlign: "center", lineHeight: 1.2,
       }}>{label}</span>
       {sublabel && (
+        /* Full-strength ink, not a faded version of it. The sublabel used
+           to be dimmed to 0.82 on a filled button, which quietly undid the
+           contrast the fill/ink pair was chosen for — and it is the
+           smallest text on the screen, so it was the one line that could
+           least afford it. Weight and size carry the hierarchy instead. */
         <span style={{
-          fontSize: "clamp(11px, 1.35vmin, 13px)", fontWeight: 600, textAlign: "center", lineHeight: 1.25,
+          fontSize: "clamp(12px, 1.45vmin, 14px)", fontWeight: 600,
+          textAlign: "center", lineHeight: 1.25,
           color: accented ? "inherit" : K.textDim,
-          opacity: accented ? 0.82 : 1,
         }}>{sublabel}</span>
       )}
     </button>
