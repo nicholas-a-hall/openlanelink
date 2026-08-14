@@ -45,11 +45,21 @@ scoring function selected per game type, not a new GameType entry -- that's
 a deliberately deferred, not a rejected, extension.
 """
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 
 from game_types import GameType, DEFAULT_GAME_TYPE
+
+# How many bowlers one lane will take. Enforced HERE rather than only in the
+# UI: the roster is now part of a lane-activation payload (api.py's
+# activate_lane), so "too many bowlers" is a request this service has to be
+# able to reject on its own -- a kiosk isn't the only thing that can send
+# one, and the limit is a property of the lane, not of one screen.
+# Snapshots report it (snapshot()'s maxBowlers) so no client hardcodes its
+# own copy.
+MAX_BOWLERS_PER_LANE = int(os.environ.get("MAX_BOWLERS_PER_LANE", "12"))
 
 # 10 bits, all pins standing -- matches firmware/PROTOCOL.md's
 # MSG_SCORE_EVENT.pinfallMask convention (bit N-1 = pin N) and
@@ -63,10 +73,21 @@ class UnknownBowlerError(KeyError):
     pass
 
 
+class LaneFullError(Exception):
+    """Adding this bowler would put the lane over MAX_BOWLERS_PER_LANE."""
+
+
 @dataclass
 class Bowler:
     id: str
     name: str
+    # Pins added to this bowler's scratch score to level a league/handicap
+    # game, entered on the bowler terminal. Deliberately NOT fed into
+    # score_game() or any frame's runningTotal -- a handicap is not pinfall
+    # and adding it there would corrupt strike/spare bonus arithmetic and
+    # make an edited frame's math unreproducible. It's applied once, at the
+    # end, as snapshot()'s totalWithHandicap; `totalScore` stays scratch.
+    handicap: int = 0
     balls: list[int] = field(default_factory=list)  # flat pinfall-per-ball list, this game
     # Index-aligned with balls: which pins fell on that ball, bit N-1 = pin
     # N (matches firmware/PROTOCOL.md's MSG_SCORE_EVENT.pinfallMask
@@ -82,6 +103,12 @@ class Game:
     bowler_ids: list[str] = field(default_factory=list)  # roster order, this game
     started_at_ms: int = 0
     game_type: GameType = DEFAULT_GAME_TYPE
+    # Set by LaneState.end_game(). The Game object is kept rather than
+    # dropped so the finished scoresheet stays readable and keeps scoring
+    # under the game_type it was actually bowled under -- dropping it would
+    # send _game_type() back to the ten-pin default and silently re-score a
+    # finished no-tap game by the wrong rules.
+    ended_at_ms: int | None = None
 
 
 class LaneState:
@@ -102,16 +129,33 @@ class LaneState:
         late-added bowler would show up in the roster but the state machine
         would never advance a turn to them, since _advance_to_next_active_
         bowler only ever cycles through that snapshot."""
+        if len(self.bowlers) >= MAX_BOWLERS_PER_LANE:
+            raise LaneFullError(
+                f"lane {self.lane_number} already has {MAX_BOWLERS_PER_LANE} bowlers, the maximum"
+            )
         bowler = Bowler(id=uuid.uuid4().hex[:8], name=name)
         self.bowlers[bowler.id] = bowler
         self._bowler_order.append(bowler.id)
-        if self.game is not None:
-            self.game.bowler_ids.append(bowler.id)
+        game = self.active_game()
+        if game is not None:
+            game.bowler_ids.append(bowler.id)
         return bowler
 
     def edit_bowler(self, bowler_id: str, name: str) -> Bowler:
         bowler = self._require_bowler(bowler_id)
         bowler.name = name
+        return bowler
+
+    def set_handicap(self, bowler_id: str, handicap: int) -> Bowler:
+        """Handicap sticks to the bowler, not the game -- it survives
+        add_game() the same way the roster itself does, since a party
+        bowling a second game hasn't stopped being the same bowlers with
+        the same averages. Negative values are refused: a handicap adds
+        pins, it never takes them away (a scratch bowler gets 0)."""
+        bowler = self._require_bowler(bowler_id)
+        if handicap < 0:
+            raise ValueError(f"handicap must be 0 or more, got {handicap}")
+        bowler.handicap = handicap
         return bowler
 
     def remove_bowler(self, bowler_id: str) -> None:
@@ -122,8 +166,9 @@ class LaneState:
         self._require_bowler(bowler_id)
         del self.bowlers[bowler_id]
         self._bowler_order.remove(bowler_id)
-        if self.game is not None and bowler_id in self.game.bowler_ids:
-            self.game.bowler_ids.remove(bowler_id)
+        game = self.active_game()
+        if game is not None and bowler_id in game.bowler_ids:
+            game.bowler_ids.remove(bowler_id)
 
     def _require_bowler(self, bowler_id: str) -> Bowler:
         try:
@@ -132,6 +177,29 @@ class LaneState:
             raise UnknownBowlerError(bowler_id) from None
 
     # ---- games ----
+    def active_game(self) -> Game | None:
+        """The game currently being bowled -- None once end_game() has
+        closed it out, even though self.game still holds the finished
+        scoresheet. Anything asking "can a ball be recorded right now"
+        (whose turn it is, roster sync) wants this; anything reading the
+        scoresheet itself (frames, game_type) wants self.game."""
+        if self.game is None or self.game.ended_at_ms is not None:
+            return None
+        return self.game
+
+    def end_game(self) -> Game:
+        """Close the current scoresheet without touching the roster or the
+        lane's session -- what the terminal's "End game" does. The party
+        keeps the lane; the balls thrown stay on the board as a final
+        score. Starting the next one is add_game() as usual, and handing
+        the lane back entirely is the session's deactivate (see
+        session.py), not this."""
+        game = self.active_game()
+        if game is None:
+            raise ValueError(f"lane {self.lane_number} has no game in progress to end")
+        game.ended_at_ms = int(time.time() * 1000)
+        return game
+
     def reset(self) -> None:
         """Full wipe: clears the roster AND the game, back to a blank lane
         -- for turning a lane over to a new party of bowlers, not for
@@ -237,11 +305,18 @@ class LaneState:
                 standing &= ~mask & FULL_PIN_MASK
         return standing
 
-    def edit_score(self, bowler_id: str, frame_number: int, ball_in_frame: int, pinfall: int) -> None:
-        """Manual correction: overwrite one already-recorded ball's pinfall,
-        addressed the way a human reads a scoresheet -- frame number (1-10)
-        and which ball within that frame (1-2, or 1-3 in the 10th) --
-        rather than a flat index into the underlying ball list. Translated
+    def edit_score(
+        self,
+        bowler_id: str,
+        frame_number: int,
+        ball_in_frame: int,
+        pinfall: int,
+        pin_mask: int | None = None,
+    ) -> None:
+        """Manual correction: set one ball's pinfall, addressed the way a
+        human reads a scoresheet -- frame number (1-10) and which ball
+        within that frame (1-2, or 1-3 in the 10th) -- rather than a flat
+        index into the underlying ball list. Translated
         into that flat index via the same frame-boundary walk frames()
         already does, since that's the only thing that knows where frame N
         actually starts once earlier strikes/spares have shifted it. The
@@ -251,27 +326,100 @@ class LaneState:
         that frame now needs a second ball, and every later frame's balls
         shift by one. A flat list re-derives that automatically; physically
         storing balls already-bucketed into frames would require this
-        module to re-bucket everything after every edit instead."""
+        module to re-bucket everything after every edit instead.
+
+        Records a ball that ISN'T there yet as well as overwriting one that
+        is. That distinction used to be a hard wall -- addressing anything
+        not already in the flat list was "out of range" -- which made this
+        endpoint unable to fix the single most common misread there is: the
+        machine caught ball 1 and missed ball 2. (Worse, a pin picker that
+        walks ball 1 then ball 2 would get a clean edit followed by a
+        failure every time it touched a one-ball frame.) The only thing
+        genuinely impossible is writing into a frame the bowler hasn't
+        reached, because a flat ball list has nowhere to put the gap; that
+        case is rejected explicitly below rather than silently landing the
+        ball in an earlier frame, which is what the old index arithmetic
+        would have done on its own.
+
+        pin_mask is optional per-pin detail for the corrected ball. A
+        correction used to always erase the mask, on the reasoning that a
+        hand-typed count has no real observation behind it -- true when the
+        correction was a bare number, but the pin pickers don't send bare
+        numbers: a bowler taps the actual pins, so which ones fell is known
+        exactly. Throwing that away is what left `pinMasks` null on every
+        kiosk-entered ball, and with it null there's no way to grey out
+        already-fallen pins when correcting ball 2. Passing None still
+        clears the mask, so a genuinely detail-free correction is unchanged."""
         bowler = self._require_bowler(bowler_id)
         gt = self._game_type()
         _validate_pinfall(pinfall, gt)
+        if pin_mask is not None and bin(pin_mask).count("1") != pinfall:
+            raise ValueError(
+                f"pin_mask {pin_mask:#x} has {bin(pin_mask).count('1')} bit(s) set, "
+                f"doesn't match pinfall={pinfall}"
+            )
         if not (1 <= frame_number <= gt.frame_count):
             raise ValueError(f"frame_number must be 1-{gt.frame_count}, got {frame_number}")
 
         frames = score_game(bowler.balls, gt)
         frame = frames[frame_number - 1]
-        if not (1 <= ball_in_frame <= len(frame["balls"])):
+        # One past the end is the append case; anything beyond that is a gap.
+        if not (1 <= ball_in_frame <= len(frame["balls"]) + 1):
             raise IndexError(
                 f"frame {frame_number} has {len(frame['balls'])} ball(s) recorded, "
                 f"ball_in_frame {ball_in_frame} out of range"
             )
 
         ball_index = sum(len(f["balls"]) for f in frames[:frame_number - 1]) + (ball_in_frame - 1)
-        bowler.balls[ball_index] = pinfall
-        # A manual correction no longer has a real per-pin observation
-        # behind it -- keeping the old mask around would misrepresent it
-        # as still-trustworthy detail for whatever the corrected count is.
-        bowler.pin_masks[ball_index] = None
+        if ball_index > len(bowler.balls):
+            raise ValueError(
+                f"frame {frame_number} hasn't been bowled yet -- there's no way to record "
+                f"ball {ball_in_frame} of it without inventing the balls in between"
+            )
+
+        # Try the edit on a copy first. record_ball() enforces "a ball can
+        # only knock down pins that are still standing" as balls arrive, but
+        # a correction rewrites a ball that already has later balls sitting
+        # behind it, so the same rule has to be re-checked across the whole
+        # resulting frame rather than just against what came before. Editing
+        # ball 1 up to a 9 in a frame whose ball 2 is already a 2 is the
+        # obvious case: neither ball is individually illegal, the pair is.
+        # Without this the scoresheet would happily hold an 11-pin frame.
+        appending = ball_index == len(bowler.balls)
+        candidate = list(bowler.balls)
+        candidate_masks = list(bowler.pin_masks)
+        if appending:
+            candidate.append(pinfall)
+            candidate_masks.append(pin_mask)
+        else:
+            candidate[ball_index] = pinfall
+            candidate_masks[ball_index] = pin_mask
+        _validate_frame_sums(candidate, gt)
+        _validate_frame_masks(candidate, candidate_masks, gt)
+
+        # Then check the ball actually landed where the caller addressed it.
+        # ball_index is derived by summing the balls in EARLIER frames, so an
+        # address pointing at a frame past the current one computes an index
+        # that happens to be the end of the list and would append to whatever
+        # frame is genuinely in progress -- scoring a ball the bowler never
+        # threw, in a frame they aren't on. Re-deriving the frames from the
+        # candidate is the only check that catches that, since it's the same
+        # walk that decides where a ball belongs in the first place.
+        landed = score_game(candidate, gt)
+        if len(landed[frame_number - 1]["balls"]) < ball_in_frame:
+            raise ValueError(
+                f"frame {frame_number} hasn't been reached yet -- ball {ball_in_frame} "
+                f"of it can't be recorded until the frames before it are bowled"
+            )
+
+        if appending:
+            bowler.balls.append(pinfall)
+            bowler.pin_masks.append(pin_mask)
+        else:
+            bowler.balls[ball_index] = pinfall
+            # The caller's mask, or None to clear it. Keeping the OLD mask
+            # would be the one wrong option: it described a different count.
+            bowler.pin_masks[ball_index] = pin_mask
 
     def frames(self, bowler_id: str) -> list[dict]:
         """Frame breakdown + running score under this lane's active
@@ -315,9 +463,12 @@ class LaneState:
         stands, not just whoever's currently up."""
         return {
             "laneNumber": self.lane_number,
+            "maxBowlers": MAX_BOWLERS_PER_LANE,
             "game": {
                 "id": self.game.id,
                 "startedAtMs": self.game.started_at_ms,
+                "endedAtMs": self.game.ended_at_ms,
+                "ended": self.game.ended_at_ms is not None,
                 "gameType": self.game.game_type.name,
             } if self.game else None,
             "bowlers": [
@@ -325,7 +476,14 @@ class LaneState:
                     "id": bid,
                     "name": self.bowlers[bid].name,
                     "frames": (frames := self.frames(bid)),
-                    "totalScore": self._total_score(frames),
+                    # Scratch, then the handicap alongside it and the sum --
+                    # all three, so a screen can show whichever its house
+                    # scores by without doing the arithmetic itself (and
+                    # without any of them being the odd one out that gets
+                    # re-derived inconsistently). See Bowler.handicap.
+                    "totalScore": (scratch := self._total_score(frames)),
+                    "handicap": self.bowlers[bid].handicap,
+                    "totalWithHandicap": scratch + self.bowlers[bid].handicap,
                     "currentFrame": (cf := self._current_frame_and_ball(frames))[0],
                     "currentBall": cf[1],
                 }
@@ -366,6 +524,68 @@ def _current_frame_balls(balls: list[int], gt: GameType) -> list[int]:
     frames = score_game(balls, gt)
     in_progress = [f for f in frames if f["balls"] and not f["turnOver"]]
     return in_progress[-1]["balls"] if in_progress else []
+
+
+def _validate_frame_masks(balls: list[int], masks: list[int | None], gt: GameType) -> None:
+    """No ball knocks down a pin an earlier ball in the same frame already
+    knocked down. The count-based check in _validate_frame_sums can't catch
+    this: pins 1,2,3 then pins 1,2 sums to five and looks perfectly legal,
+    while being physically impossible.
+
+    Balls with no per-pin detail (None) are skipped rather than treated as
+    "nothing fell" -- unknown is not zero, and assuming otherwise would
+    reject a legitimate later mask. Mirrors the same reset-on-clear rule as
+    _pins_remaining_for_next_ball: a cleared rack is respotted, so the next
+    ball starts from all ten again."""
+    idx = 0
+    for f in score_game(balls, gt):
+        standing = FULL_PIN_MASK
+        total = 0
+        for pos, b in enumerate(f["balls"]):
+            mask = masks[idx] if idx < len(masks) else None
+            idx += 1
+            if mask is not None:
+                if mask & ~standing & FULL_PIN_MASK:
+                    already = mask & ~standing & FULL_PIN_MASK
+                    raise ValueError(
+                        f"frame {f['frame']} ball {pos + 1}: pin(s) "
+                        f"{', '.join(str(p + 1) for p in range(10) if already >> p & 1)} "
+                        f"were already down"
+                    )
+                standing &= ~mask & FULL_PIN_MASK
+            total += b
+            threshold = gt.strike_threshold if pos == 0 else gt.pins_per_throw_max
+            if total >= threshold:
+                standing, total = FULL_PIN_MASK, 0  # cleared -- fresh rack
+            elif mask is None:
+                # An unknown ball leaves the rest of the frame underivable;
+                # nothing later can be checked against a baseline we don't
+                # have, so stop constraining rather than guess.
+                standing = FULL_PIN_MASK
+
+
+def _validate_frame_sums(balls: list[int], gt: GameType) -> None:
+    """Every frame in this ball list is physically throwable: no frame's
+    balls knock down more pins than were standing in front of them. The
+    same reset-on-clear rule _pins_remaining_for_next_ball() applies
+    forward, applied here across a whole already-recorded frame -- used by
+    edit_score(), which is the one path that can rewrite a ball with later
+    balls already behind it. Raises ValueError naming the offending frame,
+    which api.py surfaces as a 400."""
+    for f in score_game(balls, gt):
+        remaining = gt.pins_per_throw_max
+        total = 0
+        for pos, b in enumerate(f["balls"]):
+            if b > remaining:
+                raise ValueError(
+                    f"frame {f['frame']} ball {pos + 1}: {b} pins with only {remaining} standing"
+                )
+            total += b
+            threshold = gt.strike_threshold if pos == 0 else gt.pins_per_throw_max
+            if total >= threshold:
+                remaining, total = gt.pins_per_throw_max, 0  # cleared -- fresh rack for whatever's next
+            else:
+                remaining = gt.pins_per_throw_max - total
 
 
 def _pins_remaining_for_next_ball(frame_balls_so_far: list[int], gt: GameType) -> int:

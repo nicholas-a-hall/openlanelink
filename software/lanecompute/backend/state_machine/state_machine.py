@@ -74,6 +74,53 @@ class LaneStateMachine:
         self.current_bowler_idx = 0
         self.state = State.READY
 
+    def set_current_bowler(self, bowler_id: str) -> None:
+        """Hand the turn to a specific bowler.
+
+        Whose turn it is is otherwise only ever moved by
+        _advance_to_next_active_bowler, i.e. by balls actually being thrown.
+        That's correct right up until the lane's idea of the rotation stops
+        matching the people standing on it -- somebody bowls out of order,
+        a ball gets recorded against the wrong person and corrected after
+        the turn already moved on, a bowler is added mid-frame. Without
+        this the only fix was resetting the lane and losing the scoresheet.
+
+        Deliberately does NOT touch self.state. A lane that's PINSETTER_BUSY
+        is still busy after the turn changes -- the pinsetter doesn't care
+        who's up -- and forcing READY here would let a ball be recorded
+        while the rack is still moving. The turn is the only thing this
+        changes.
+
+        Note this is a correction, not a delivery: it doesn't record or
+        un-record anything, so the frames each bowler has already thrown are
+        untouched. Fixing those is edit_score's job (game_state.py)."""
+        ls = self._lane()
+        game = ls.active_game()
+        if game is None:
+            raise InvalidTransitionError(f"lane {self.lane_number}: no game in progress to set a turn in")
+        if bowler_id not in game.bowler_ids:
+            raise InvalidTransitionError(
+                f"lane {self.lane_number}: bowler {bowler_id} isn't in this game's rotation"
+            )
+        if self._bowler_done(ls, bowler_id):
+            # Handing the turn to someone with no frames left would wedge
+            # the lane: the next recorded ball raises "game already
+            # complete" and nothing advances past them.
+            raise InvalidTransitionError(
+                f"lane {self.lane_number}: bowler {bowler_id} has already finished their game"
+            )
+        self.current_bowler_idx = game.bowler_ids.index(bowler_id)
+
+    def end_game(self) -> None:
+        """Call after game_state.LaneState.end_game() closes the scoresheet
+        -- the bowlers keep the lane (their session is untouched), there's
+        just nothing in progress to be READY for until they start another
+        one. Like reset(), not guarded by current state: ending a game
+        mid-ball or mid-cycle is a legitimate thing for a party to do and
+        should never be refused."""
+        self.current_bowler_idx = 0
+        self.state = State.IDLE
+
     def reset(self) -> None:
         """Call after game_state.LaneState.reset() clears the roster/game --
         drops back to IDLE regardless of whatever was in flight (a ball
@@ -249,10 +296,14 @@ class LaneStateMachine:
         return game_state.get_lane(self.lane_number)
 
     def _current_bowler_id(self) -> str | None:
-        ls = self._lane()
-        if not ls.game or not ls.game.bowler_ids:
+        # active_game(), not .game: an ended scoresheet still exists to be
+        # read, but nobody is "up" on it -- so a stray pinfall/foul arriving
+        # after End game raises rather than silently appending a ball to a
+        # finished game.
+        game = self._lane().active_game()
+        if not game or not game.bowler_ids:
             return None
-        return ls.game.bowler_ids[self.current_bowler_idx % len(ls.game.bowler_ids)]
+        return game.bowler_ids[self.current_bowler_idx % len(game.bowler_ids)]
 
     @staticmethod
     def _current_frame_status(ls: game_state.LaneState, bowler_id: str) -> tuple[bool, int]:
@@ -281,9 +332,10 @@ class LaneStateMachine:
 
     def _all_bowlers_done(self) -> bool:
         ls = self._lane()
-        if not ls.game:
+        game = ls.active_game()
+        if not game:
             return True
-        return all(self._bowler_done(ls, bid) for bid in ls.game.bowler_ids)
+        return all(self._bowler_done(ls, bid) for bid in game.bowler_ids)
 
     def _rerack_cycle_count(self) -> int:
         """How many solenoid cycles get the pinsetter from its own
