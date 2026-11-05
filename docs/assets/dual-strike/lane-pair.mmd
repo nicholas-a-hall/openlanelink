@@ -1,0 +1,22 @@
+%%{init: {"theme": "neutral", "fontFamily": "Arial, sans-serif", "htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+flowchart TB
+    accTitle: Proposed DUAL-STRIKE lane-pair architecture
+    accDescr: Two independent game and vision contexts share one Pi, UART bridge, gateway, foul board and speed board. Each lane has its own camera, local motion controller, drive hardware and independent protective branch. Controller links use the same shared RS485 bus plus separately addressed ESP-NOW peers.
+    subgraph pi["Shared Raspberry Pi / lane pair"]
+        lane1["Lane 1 context<br/>State machine and vision worker"]
+        lane2["Lane 2 context<br/>State machine and vision worker"]
+        bridge["uart_bridge"]
+        lane1 <-->|"HTTP / WebSocket"| bridge
+        lane2 <-->|"HTTP / WebSocket"| bridge
+    end
+    camera1["USB camera 1"] -->|"Images"| lane1
+    camera2["USB camera 2"] -->|"Images"| lane2
+    bridge <-->|"UART"| gateway["One existing gateway<br/>Configured lane-ID routing"]
+    gateway <-->|"Dual transport"| string1["String controller 1<br/>Local motion supervision"]
+    gateway <-->|"Dual transport"| string2["String controller 2<br/>Local motion supervision"]
+    string1 -->|"Local drive control"| hardware1["Motor and retention hardware 1"]
+    string2 -->|"Local drive control"| hardware2["Motor and retention hardware 2"]
+    foul["One paired foul board<br/>One foul gate per lane"] -->|"Lane-tagged dual-send events"| gateway
+    speed["One paired speed board<br/>Two ball gates per lane"] -->|"Lane-tagged dual-send events"| gateway
+    safety1["Independent safety branch 1"] ==>|"Hardwired stop and load retention"| hardware1
+    safety2["Independent safety branch 2"] ==>|"Hardwired stop and load retention"| hardware2

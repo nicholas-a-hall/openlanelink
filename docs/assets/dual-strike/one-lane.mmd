@@ -1,0 +1,23 @@
+%%{init: {"theme": "neutral", "fontFamily": "Arial, sans-serif", "htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+flowchart TB
+    accTitle: Proposed DUAL-STRIKE architecture with one connected lane
+    accDescr: Existing Pi services and gateway serve one connected string controller, paired sensor boards and a camera. Independent protective hardware acts on the motor and retention mechanism. String-specific functions remain proposed and unimplemented.
+    subgraph pi["Raspberry Pi / lane-compute installation"]
+        bridge["uart_bridge<br/>Sole serial owner"]
+        game["state_machine<br/>Game and scoring authority"]
+        vision["vision<br/>Proposed stability and verification"]
+        game -->|"HTTP commands"| bridge
+        bridge -->|"WebSocket events"| game
+        bridge -->|"WebSocket beam events"| vision
+        game -->|"Proposed correlated capture requests"| vision
+        vision -->|"HTTP observations and verification outcomes"| game
+    end
+    camera["USB camera<br/>One per lane"] -->|"Images"| vision
+    bridge <-->|"Framed UART: translated messages"| gateway["Existing gateway_node<br/>Proposed lane-aware string routing"]
+    gateway <-->|"ESP-NOW and shared RS485"| controller["New string_pinsetter_node<br/>Local motion and interlock supervision"]
+    foul["Existing foul_node<br/>One board per lane pair"] -->|"Lane-tagged events over both transports"| gateway
+    speed["Existing speed_node<br/>One board per lane pair"] -->|"Lane-tagged events over both transports"| gateway
+    controller -->|"Drive and retention commands"| hardware["Motor and 10 retention channels<br/>Position and tension feedback"]
+    hardware -->|"Local feedback"| controller
+    safety["Independent hardwired safety<br/>E-stop, guards, energy isolation<br/>Load retention and containment"] ==>|"Protective functions independent of software"| hardware
+    safety -.->|"Diagnostic monitoring only"| controller
