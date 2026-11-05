@@ -253,6 +253,10 @@ Both WebSocket endpoints are read-only broadcast — a control tablet sends its 
 
 Two screens per lane: a 16:9 overhead monitor and a 9:16 bowler-facing control tablet, each pointed at its own device (`/display/:laneId`, `/control/:laneId`). Built on Vite + React Router. Game state is pushed down from a per-lane WebSocket service run by the compute node; the front end's own hooks (`useLaneFeed`, `useTakeoverFeed`) are the sole integration points for that feed, so the components consuming them stay decoupled from wherever the data actually comes from.
 
+## Design proposals
+
+- [DUAL-STRIKE string-pinsetter integration and isolated lane-pair demo]({{ '/proposals/dual-strike/' | relative_url }}) — a documentation-only proposal, not an implemented feature.
+
 ## Top of mind todos
 
 Loose threads in the current design, gathered here instead of scattered through the sections above:
